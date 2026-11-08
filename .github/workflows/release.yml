@@ -2,11 +2,12 @@ name: Release
 on:
   push:
     tags: ['v*.*.*']
+  workflow_dispatch:
 permissions:
   contents: write
   packages: write
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-xiazai
   cancel-in-progress: false
 jobs:
   release:
@@ -23,13 +24,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')
-          test "v$VERSION" = "$GITHUB_REF_NAME"
-          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft > /tmp/draft 2>/dev/null; then
+          if [ "$GITHUB_EVENT_NAME" = push ]; then test "v$VERSION" = "$GITHUB_REF_NAME"; fi
+          RELEASE_TAG="v$VERSION"
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > /tmp/draft 2>/dev/null; then
             test "$(cat /tmp/draft)" = true || { echo 'Public releases are immutable'; exit 1; }
           else
-            gh release create "$GITHUB_REF_NAME" --draft --title "XIAZAI $GITHUB_REF_NAME" --notes-file docs/release-notes.md
+            gh release create "$RELEASE_TAG" --draft --title "XIAZAI $RELEASE_TAG" --notes-file docs/release-notes.md
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
       - run: npm test
       - run: npm run build
       - run: bash -n install.sh reset-admin.sh
@@ -65,8 +68,8 @@ jobs:
           RELEASE_IMAGE: ghcr.io/a06342637/xiazai@${{ steps.image.outputs.digest }}
         run: |
           node -e 'require("fs").writeFileSync("release.json",JSON.stringify({schema:1,version:process.env.VERSION,image:process.env.RELEASE_IMAGE},null,2))'
-          gh release upload "$GITHUB_REF_NAME" release.json compose.yml install.sh reset-admin.sh --clobber
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          gh release upload "$RELEASE_TAG" release.json compose.yml install.sh reset-admin.sh --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

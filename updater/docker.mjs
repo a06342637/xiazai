@@ -64,6 +64,7 @@ export function cloneConfig(inspect, image, version) {
   config.Labels = {...config.Labels, 'com.docker.compose.image': image};
   if (version) config.Labels['org.opencontainers.image.version'] = version;
   config.HostConfig = structuredClone(inspect.HostConfig);
+  config.HostConfig.PortBindings ||= {};
   // Docker resolves an empty host port at runtime. Preserve that assigned port too.
   for (const [port, bindings] of Object.entries(inspect.NetworkSettings.Ports || {})) {
     if (bindings) config.HostConfig.PortBindings[port] = structuredClone(bindings);
