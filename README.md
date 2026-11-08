@@ -4,6 +4,50 @@
 
 当前版本 **v1.0.6**。Linux amd64 / arm64 均可部署。默认文件及设置保存在宿主机 **`/root/xiazai`**。
 
+## 界面预览
+
+首页：拖拽 / 点击上传，默认保留 1 天，也可选择永久。
+
+![临时下载首页](docs/screenshots/home.png)
+
+<details>
+<summary>文件列表、展开预览与下载直链</summary>
+
+多个文件逐项展示，点击文件行展开预览；“直链”复制直接下载地址。
+
+![文件列表与图片展开预览](docs/screenshots/files.png)
+
+</details>
+
+<details>
+<summary>加密 ZIP 密码解锁与在线目录</summary>
+
+输入解压密码即可查看加密 ZIP，解锁后支持内部文件预览和下载。
+
+![加密 ZIP 密码输入](docs/screenshots/zip-password.png)
+
+![加密 ZIP 解锁后的文件目录](docs/screenshots/zip-unlocked.png)
+
+</details>
+
+<details>
+<summary>管理员设置、磁盘空间与在线升级</summary>
+
+配置保留时间与清理周期，查看磁盘剩余空间，检查并升级系统版本。
+
+![管理员设置与磁盘空间](docs/screenshots/settings.png)
+
+</details>
+
+<details>
+<summary>手机端界面</summary>
+
+<img src="docs/screenshots/mobile.png" alt="手机端上传页面" width="390">
+
+</details>
+
+以上截图使用独立演示数据，展示 v1.0.6 界面。
+
 ## 一键部署
 
 在 Linux 服务器上以 root 执行：
