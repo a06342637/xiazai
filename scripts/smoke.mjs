@@ -45,7 +45,8 @@ try {
   await page.getByRole('button',{name:'打开设置'}).click(); await page.getByText('你已登录普通账号。',{exact:false}).waitFor();
   await page.getByRole('button',{name:'关闭设置',exact:true}).click();
   await page.getByRole('button',{name:'smokeuser'}).click(); await page.getByRole('button',{name:'退出登录'}).click();
-  await page.goto(base); await page.getByRole('button',{name:'登录 / 注册'}).click();
+  // Logout from history navigates to home. Wait for that navigation before continuing.
+  await page.waitForURL(base+'/'); await page.getByRole('button',{name:'登录 / 注册'}).click();
   await page.getByLabel('用户名',{exact:true}).fill('admin'); await page.getByLabel('密码',{exact:true}).fill('smoke-admin-password');
   await page.locator('#auth-submit').click(); await page.getByRole('button',{name:'admin',exact:true}).waitFor();
   await page.getByRole('button',{name:'打开设置'}).click(); await page.getByText('系统升级',{exact:false}).waitFor();
