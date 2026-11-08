@@ -1,0 +1,48 @@
+services:
+  app:
+    image: ${APP_IMAGE:-ghcr.io/a06342637/xiazai:1.0.0}
+    container_name: xiazai
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${PORT:-8080}:8080"
+    environment:
+      DATA_DIR: /data
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      UPDATE_KEY: ${UPDATE_KEY:?请先运行 install.sh 或设置 UPDATE_KEY}
+      UPDATER_URL: http://updater:8081
+    volumes:
+      - ${DATA_DIR:-/root/xiazai}:/data
+    networks: [backend]
+    stop_grace_period: 35s
+    mem_limit: 768m
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  updater:
+    image: ${UPDATER_IMAGE:-ghcr.io/a06342637/xiazai:1.0.0}
+    container_name: xiazai-updater
+    restart: unless-stopped
+    init: true
+    command: [node, updater/index.mjs]
+    healthcheck:
+      disable: true
+    environment:
+      DATA_DIR: /data
+      UPDATE_KEY: ${UPDATE_KEY:?请设置 UPDATE_KEY}
+      APP_CONTAINER: xiazai
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DATA_DIR:-/root/xiazai}:/data
+    networks: [backend]
+    mem_limit: 192m
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+networks:
+  backend:
+    driver: bridge

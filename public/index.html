@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8f9f7">
+  <meta name="description" content="拖入文件，即刻分享。简单、轻盈的临时文件传输。">
+  <title>临时下载 · 让文件轻松抵达</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="header">
+    <a class="brand" href="/" aria-label="临时下载首页"><span class="brand-icon" data-icon="send"></span><span class="site-name">临时下载</span><span class="brand-divider"></span><span class="brand-caption">文件，轻松抵达</span></a>
+    <nav class="nav-actions" aria-label="主导航">
+      <button class="nav-button" id="history-button"><span data-icon="history"></span><span>我的文件</span></button>
+      <button class="icon-button" id="theme-button" title="切换深色模式" aria-label="切换深色模式"><span data-icon="sun"></span></button>
+      <button class="icon-button" id="settings-button" title="设置" aria-label="打开设置"><span data-icon="settings"></span></button>
+      <button class="login-button" id="account-button"><span data-icon="user"></span><span id="account-label">登录 / 注册</span></button>
+    </nav>
+  </header>
+  <main>
+    <section class="hero" id="hero">
+      <div class="eyebrow"><span class="status-dot"></span> 不必等待，分享就这么简单</div>
+      <h1>文件一拖，<span>即刻分享。</span></h1>
+      <p>从你的设备，到任何人的手中。<br class="mobile-break">一个链接，就够了。</p>
+    </section>
+    <section class="upload-panel" id="upload-panel" aria-label="上传文件">
+      <div class="panel-heading"><span><span class="small-icon" data-icon="upload"></span>发送文件</span><span class="badge">免登录也能分享</span></div>
+      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="选择或拖拽文件上传">
+        <div class="upload-art"><span class="art-square square-back"></span><span class="art-square square-front"><span data-icon="upload"></span></span><span class="art-spark">+</span></div>
+        <h2>把文件拖到这里</h2>
+        <p>任意格式，支持多个文件一起上传</p>
+        <button class="primary-button select-button" id="select-button"><span data-icon="plus"></span>选择文件</button>
+        <span class="upload-limit" id="upload-limit">正在连接服务…</span>
+        <input type="file" id="file-input" aria-label="选择上传文件" multiple hidden>
+      </div>
+      <div class="upload-progress" id="upload-progress" hidden aria-live="polite">
+        <div class="progress-icon"><span data-icon="upload"></span></div><h2 id="progress-title">正在上传…</h2>
+        <p id="progress-detail">请保持页面打开</p>
+        <div class="progress-track"><div id="progress-fill"></div></div>
+        <div class="progress-footer"><span id="progress-percent">0%</span><button class="text-button" id="cancel-upload">取消上传</button></div>
+      </div>
+      <div class="share-result" id="share-result" hidden aria-live="polite">
+        <div class="success-icon"><span data-icon="check"></span></div><h2>文件准备好了</h2><p id="result-description"></p>
+        <div class="share-link"><input id="share-url" readonly aria-label="文件分享链接"><button class="primary-button" id="copy-link"><span data-icon="copy"></span><span id="copy-label">复制链接</span></button></div>
+        <div class="result-meta"><span data-icon="clock"></span><span id="result-expiry"></span></div>
+        <div class="result-actions"><a id="open-share" class="secondary-button" target="_blank" rel="noopener">查看文件<span data-icon="arrow"></span></a><button id="send-more" class="secondary-button">继续发送<span data-icon="plus"></span></button></div>
+      </div>
+      <div class="upload-options" id="upload-options"><div class="option-label"><span data-icon="clock"></span><span>文件保留</span></div><div class="expiry-options" id="expiry-options"></div><span class="option-note">到期自动失效</span></div>
+      <div class="panel-footnote"><span data-icon="lock"></span><span id="panel-note">上传完成后自动生成链接，并复制到剪贴板</span></div>
+    </section>
+    <section class="download-panel" id="download-panel" hidden></section>
+    <section class="history-panel" id="history-panel" hidden></section>
+    <section class="features" id="features" aria-label="功能特点">
+      <div class="feature"><span class="feature-icon" data-icon="link"></span><div><strong>一个链接，轻松传递</strong><p>复制发送，对方打开就能下载</p></div></div>
+      <div class="feature"><span class="feature-icon" data-icon="clock"></span><div><strong>限时存放，自动清理</strong><p>你的文件，有自己的离开时间</p></div></div>
+      <div class="feature"><span class="feature-icon" data-icon="eye"></span><div><strong>先看一眼，再下载</strong><p>图片、视频、文档与 ZIP 在线查看</p></div></div>
+    </section>
+    <div class="quiet-note" id="quiet-note">少一点繁琐，多一点自由。<span class="note-line"></span>让分享回归简单。</div>
+  </main>
+  <footer><span><a href="https://github.com/a06342637/xiazai" target="_blank" rel="noopener"><span class="footer-brand">XIAZAI</span></a><span class="version" id="footer-version">v1.0.0</span></span><span class="footer-right"><span class="status-dot"></span>由你托管，为你而用</span></footer>
+  <dialog id="auth-dialog" class="modal auth-modal" aria-labelledby="auth-title">
+    <button class="close-button" data-close="auth-dialog" aria-label="关闭登录窗口"><span data-icon="close"></span></button>
+    <div class="modal-mark" data-icon="user"></div><h2 id="auth-title">欢迎回来</h2><p class="modal-description" id="auth-description">登录，管理你分享过的文件。</p>
+    <div class="tabs"><button id="login-tab" class="active">登录</button><button id="register-tab">注册</button></div>
+    <form id="auth-form"><label>用户名<input id="auth-username" autocomplete="username" required minlength="2" maxlength="32" placeholder="输入用户名"></label><label>密码<input id="auth-password" type="password" autocomplete="current-password" required minlength="8" maxlength="128" placeholder="输入密码"></label><p class="form-error" id="auth-error" role="alert"></p><button type="submit" class="primary-button full-width" id="auth-submit">登录</button></form>
+    <p class="form-hint" id="auth-hint">新注册账号可管理自己的文件。</p>
+  </dialog>
+  <dialog id="account-dialog" class="modal" aria-labelledby="account-title"><button class="close-button" data-close="account-dialog" aria-label="关闭账号窗口"><span data-icon="close"></span></button><h2 id="account-title">我的账号</h2><p id="account-info" class="modal-description"></p><form id="password-form"><label>当前密码<input id="current-password" type="password" autocomplete="current-password" required></label><label>新密码<input id="new-password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></label><p class="form-error" id="password-error" role="alert"></p><button class="primary-button full-width" type="submit">修改密码</button></form><button class="secondary-button full-width" id="logout-button">退出登录</button><p class="form-hint">忘记管理员密码？在服务器运行重置脚本。</p></dialog>
+  <dialog id="settings-dialog" class="modal settings-modal" aria-labelledby="settings-title"><button class="close-button" data-close="settings-dialog" aria-label="关闭设置"><span data-icon="close"></span></button><div class="modal-heading"><span class="modal-mark" data-icon="settings"></span><div><h2 id="settings-title">站点设置</h2><p class="modal-description">存储、清理与系统版本</p></div></div><div id="settings-content"></div></dialog>
+  <dialog id="preview-dialog" class="modal preview-modal" aria-labelledby="preview-title"><div class="preview-heading"><h2 id="preview-title">文件预览</h2><button class="close-button" data-close="preview-dialog" aria-label="关闭预览"><span data-icon="close"></span></button></div><div id="preview-content"></div></dialog>
+  <dialog id="confirm-dialog" class="modal" aria-labelledby="confirm-title"><h2 id="confirm-title">删除这次分享？</h2><p class="modal-description">分享中的文件会被永久删除，链接立即失效。</p><div class="confirm-actions"><button class="secondary-button" data-close="confirm-dialog">保留文件</button><button class="danger-button" id="confirm-delete">删除文件</button></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

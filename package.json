@@ -1,0 +1,27 @@
+{
+  "name": "xiazai",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted temporary file sharing with Docker and online updates",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server/index.mjs",
+    "dev": "node --watch server/index.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "yauzl": "^3.2.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.1"
+  },
+  "overrides": { "minimatch": "^11.0.5" }
+}

@@ -1,0 +1,10 @@
+.git
+.github
+node_modules
+data
+.env
+.env.*
+.verification
+test
+README.md
+docs
