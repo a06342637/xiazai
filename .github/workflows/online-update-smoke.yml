@@ -1,0 +1,15 @@
+name: Production online update smoke
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify real administrator online update
+        run: sudo --preserve-env=PATH bash scripts/online-update-smoke.sh
