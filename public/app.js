@@ -31,7 +31,7 @@ const permanentTransfer = transfer => transfer.permanent === true || transfer.ex
 const expiryText = transfer => permanentTransfer(transfer) ? '永久保留' : `${date(transfer.expiresAt)} 到期失效`;
 const activeTransfer = transfer => permanentTransfer(transfer) || transfer.expiresAt > Date.now();
 let config = null, user = null, expiryHours = 24, request = null, toastTimer, authMode = 'login', authNext = null, page = 1, updatePoll = null, pendingDelete;
-let currentZip = null, storagePoll = null, previewRevision = 0, viewRevision = 0, storageRefreshing = false;
+let currentZip = null, storagePoll = null, previewRevision = 0, viewRevision = 0, storageRefreshing = false, settingsRevision = 0;
 const previewUrls = new Set();
 function clearPreviewMedia() { for (const url of previewUrls) URL.revokeObjectURL(url); previewUrls.clear(); }
 async function api(url, options = {}) {
@@ -43,7 +43,8 @@ async function api(url, options = {}) {
 }
 function toast(message) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').hidden = false; toastTimer = setTimeout(() => $('#toast').hidden = true, 4000); }
 function showDialog(name) { const dialog = $(`#${name}`); if (!dialog.open) dialog.showModal(); }
-function closeDialog(name) { $(`#${name}`).close(); }
+function clearPreview() { previewRevision++; clearPreviewMedia(); $('#preview-content').replaceChildren(); currentZip = null; }
+function closeDialog(name) { if(name === 'preview-dialog')clearPreview(); $(`#${name}`).close(); }
 function updateUser(next) { user = next; $('#account-label').textContent = user ? user.username : '登录 / 注册'; $('#panel-note').textContent = user ? '上传完成后自动复制链接，并保存到我的文件' : '上传完成后自动生成链接，并复制到剪贴板'; }
 function applyConfig(next) {
   config = next; document.title = `${config.siteName} · 让文件轻松抵达`;
@@ -248,11 +249,13 @@ function changeAuthMode(mode) {
 async function showSettings() {
   if (!user) return openAuth('login', showSettings);
   showDialog('settings-dialog');
+  const revision = ++settingsRevision;
   const content = $('#settings-content');
   if (user.role !== 'admin') { content.innerHTML = `<div class="empty-state"><div class="success-icon">${icon('lock')}</div><p>你已登录普通账号。<br>站点设置与系统升级由管理员管理。</p><button class="secondary-button" id="settings-my-files">查看我的文件</button></div>`; $('#settings-my-files').onclick = () => { closeDialog('settings-dialog'); showHistory(); }; return; }
   content.innerHTML = '<p class="modal-description">正在加载设置…</p>';
   try {
     const result = await api('/api/admin/settings'), s = result.settings;
+    if(revision !== settingsRevision || !$('#settings-dialog').open)return;
     content.innerHTML = `<form id="settings-form"><label>站点名称<input name="siteName" value="${escape(s.siteName)}" maxlength="30" required></label><div class="settings-grid"><label>默认保留时间（小时）<input name="retentionHours" type="number" min="1" max="8760" value="${s.retentionHours}" required></label><label>清理周期（小时）<input name="cleanupIntervalHours" type="number" min="1" max="168" value="${s.cleanupIntervalHours}" required></label></div><label>分享域名（可留空）<input name="publicUrl" value="${escape(s.publicUrl)}" placeholder="https://files.example.com"></label><p class="settings-help">新设置仅影响之后的上传。到期链接立即失效，磁盘文件按清理周期删除。${config.publicUrl && config.publicUrl !== s.publicUrl?'部署环境变量中的域名优先。':''}</p><p class="form-error" id="settings-error" role="alert"></p><button class="primary-button" type="submit">保存设置</button></form><div class="settings-section"><h3>磁盘与文件存储</h3><div id="storage-stats"></div><p class="settings-help">读取上传目录所在宿主机磁盘的实际空间，包含系统和其他程序占用。每 5 秒刷新；上传时逐块检查并每秒巡检，达到 95% 自动停止。</p><button class="secondary-button" id="refresh-storage">刷新磁盘空间</button> <button class="secondary-button" id="cleanup-now">${icon('clock')}立即清理过期文件</button></div><div class="settings-section"><h3>系统升级 <span class="badge">仅管理员</span></h3><div class="update-box"><div class="update-header"><span>当前版本</span><span class="version-pill">v${result.version}</span></div><p id="update-message" class="update-message"></p><pre id="release-notes" class="release-notes" hidden></pre><div class="settings-buttons"><button class="secondary-button" id="check-update">检查更新</button><button class="primary-button" id="run-update" disabled>一键升级</button></div></div><p class="settings-help">更新会短暂重启服务。数据保持不变，启动失败自动回滚。</p></div>`;
     renderStats(result.stats);
     $('#settings-form').onsubmit = async event => {
@@ -274,11 +277,12 @@ async function showSettings() {
     $('#check-update').onclick = checkUpdate; $('#run-update').onclick = runUpdate;
     $('#refresh-storage').onclick = refreshStorage;
     clearInterval(storagePoll); storagePoll = setInterval(refreshStorage, 5000);
-  } catch(error) { content.innerHTML = `<p class="form-error">${escape(error.message)}</p>`; }
+  } catch(error) { if(revision === settingsRevision && $('#settings-dialog').open)content.innerHTML = `<p class="form-error">${escape(error.message)}</p>`; }
 }
 function renderStats(stats) {
   const disk = stats.disk;
   $('#storage-stats').innerHTML = `<div class="stats-grid"><div><div class="stat-value">${bytes(disk.totalBytes)}</div><div class="stat-label">磁盘总容量</div></div><div><div class="stat-value">${bytes(disk.usedBytes)}</div><div class="stat-label">磁盘已用空间</div></div><div><div class="stat-value" id="disk-available">${bytes(disk.availableBytes)}</div><div class="stat-label">磁盘剩余可用</div></div></div><p class="settings-help ${disk.uploadAllowed ? '' : 'expired'}" id="disk-status">磁盘使用率 ${disk.usedPercent.toFixed(2)}% · ${disk.uploadAllowed ? '可以上传，达到 95% 自动停止' : '已暂停上传，请清理磁盘空间'}</p><p class="settings-help">分享文件 ${bytes(stats.usedBytes)} · 有效分享 ${stats.activeTransfers} · 待清理 ${stats.expiredTransfers}<br>上次清理 ${stats.lastCleanupAt?date(stats.lastCleanupAt):'尚未运行'} · 下次 ${date(stats.nextCleanupAt)}</p>`;
+  if(stats.recoveryIssues?.length){const warning=document.createElement('p');warning.className='form-error';warning.textContent=`发现 ${stats.recoveryIssues.length} 条不完整分享，原文件已保留待恢复，请在服务器检查 uploads 目录。`;$('#storage-stats').append(warning);}
 }
 async function refreshStorage() {
   if (storageRefreshing || !$('#settings-dialog').open || !$('#storage-stats')) return;
@@ -288,9 +292,10 @@ async function refreshStorage() {
   finally { storageRefreshing = false; }
 }
 async function checkUpdate() {
+  const revision = settingsRevision;
   $('#check-update').disabled = true; $('#update-message').textContent = '正在检查最新版本…';
-  try { const result = await api('/api/admin/version'); $('#update-message').textContent = result.available?`发现新版本 v${result.latest}，现在可以升级。`:'当前已是最新正式版本。'; $('#run-update').disabled = !result.available; $('#release-notes').textContent = result.notes; $('#release-notes').hidden = !result.notes; }
-  catch(error) { $('#update-message').textContent = error.message; } finally { $('#check-update').disabled = false; }
+  try { const result = await api('/api/admin/version'); if(revision!==settingsRevision || !$('#settings-dialog').open)return;$('#update-message').textContent = result.available?`发现新版本 v${result.latest}，现在可以升级。`:'当前已是最新正式版本。'; $('#run-update').disabled = !result.available; $('#release-notes').textContent = result.notes; $('#release-notes').hidden = !result.notes; }
+  catch(error) { if(revision===settingsRevision && $('#update-message'))$('#update-message').textContent = error.message; } finally { if(revision===settingsRevision && $('#check-update'))$('#check-update').disabled = false; }
 }
 function renderUpdate(state) {
   if (!$('#update-message')) return;
@@ -316,8 +321,8 @@ try { setTheme(localStorage.getItem('xiazai-theme') || 'light'); } catch { setTh
 $('#theme-button').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark'?'light':'dark');
 document.querySelectorAll('[data-close]').forEach(button => button.onclick = () => closeDialog(button.dataset.close));
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } }));
-$('#preview-dialog').addEventListener('close', () => { previewRevision++;clearPreviewMedia(); $('#preview-content').replaceChildren(); currentZip = null; });
-$('#settings-dialog').addEventListener('close', () => { clearInterval(updatePoll); updatePoll = null; clearInterval(storagePoll); storagePoll = null; });
+$('#preview-dialog').addEventListener('close', clearPreview);
+$('#settings-dialog').addEventListener('close', () => { settingsRevision++;clearInterval(updatePoll); updatePoll = null; clearInterval(storagePoll); storagePoll = null; });
 $('#select-button').onclick = event => { event.stopPropagation(); $('#file-input').click(); };
 $('#dropzone').onclick = () => $('#file-input').click();
 $('#dropzone').onkeydown = event => { if(event.key==='Enter' || event.key===' ') { event.preventDefault(); $('#file-input').click(); } };

@@ -11,6 +11,7 @@ export async function parseUpload(req, res, folder, disk) {
   const aborted = () => controller.abort(httpError(400, '上传已取消'));
   req.once('aborted', aborted);
   const jobs = new Set();
+  let fileQueue = Promise.resolve();
   let rejectAbort;
   const abortResult = new Promise((resolve, reject) => { rejectAbort = reject; });
   const stopReceiving = () => {
@@ -40,8 +41,8 @@ export async function parseUpload(req, res, folder, disk) {
         } });
         await pipeline(file.stream, output, { signal });
       };
-      const job = writeFile().then(async () => {
-        await handle.close(); callback(null, { id: fileId, path: filename, size, name: safeName(file.originalname) });
+      const job = fileQueue.then(writeFile).then(async () => {
+        await handle.sync(); await handle.close(); callback(null, { id: fileId, path: filename, size, name: safeName(file.originalname) });
       }).catch(async error => {
         failure ||= signal.reason || error;
         controller.abort(failure);
@@ -51,7 +52,8 @@ export async function parseUpload(req, res, folder, disk) {
         await rm(filename, { force: true }).catch(() => {});
         callback(failure);
       });
-      jobs.add(job); job.finally(() => jobs.delete(job));
+      fileQueue = job;
+      jobs.add(job); job.then(() => jobs.delete(job), () => jobs.delete(job));
     },
     _removeFile(request, file, callback) { rm(file.path, { force: true }).then(() => callback(null), callback); }
   };

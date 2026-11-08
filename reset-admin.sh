@@ -20,6 +20,8 @@ cleanup() { rm -rf -- "$TMP"; if [[ "$NEED_START" == 1 ]]; then docker start xia
 trap cleanup EXIT
 # Always use the running app's exact image, including after an online upgrade.
 IMAGE="$(docker inspect --format '{{.Config.Image}}' xiazai)"
+ACTUAL_ROOT="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' xiazai)"
+if [[ "$ACTUAL_ROOT" != "$ROOT" ]]; then echo "数据目录与运行容器不一致，请指定正确 XIAZAI_DATA_DIR 后重试。"; exit 1; fi
 if [[ -f "$ROOT/system/update.json" ]]; then
   docker run --rm -v "$ROOT:/data:ro" "$IMAGE" node -e 'const fs=require("fs");const s=JSON.parse(fs.readFileSync("/data/system/update.json"));if(!["idle","success","failed","rolled_back"].includes(s.phase)){console.error("系统正在更新，请更新结束后重置密码。");process.exit(1)}'
 fi

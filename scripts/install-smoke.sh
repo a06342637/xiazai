@@ -10,6 +10,10 @@ trap cleanup EXIT
 export XIAZAI_DATA_DIR="$ROOT" XIAZAI_PORT="$PORT"
 export XIAZAI_ADMIN_USERNAME=installadmin XIAZAI_ADMIN_PASSWORD=isolated-install-password
 bash install.sh > "$ROOT/install-output.log" 2>&1 || { sed '/密码/d' "$ROOT/install-output.log"; exit 1; }
+printf '\n# preserved custom deployment marker\n' >> "$ROOT/deploy/compose.yml"
+before_config="$(sha256sum "$ROOT/deploy/compose.yml" | cut -d ' ' -f 1)"
+bash install.sh > "$ROOT/reinstall-output.log" 2>&1 || { sed '/密码/d' "$ROOT/reinstall-output.log"; exit 1; }
+test "$before_config" = "$(sha256sum "$ROOT/deploy/compose.yml" | cut -d ' ' -f 1)"
 node --input-type=module - <<'JS'
 import assert from 'node:assert/strict';
 const base='http://127.0.0.1:18080';

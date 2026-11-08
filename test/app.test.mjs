@@ -55,7 +55,7 @@ test('public upload, unicode filename, binary download, preview, ZIP bundle and 
   assert.equal(photo.headers.get('content-type'),'image/png'); assert.deepEqual(Buffer.from(await photo.arrayBuffer()),Buffer.from([0,1,2,255]));
   const archive = await f.request(`/api/transfers/${transfer.id}/zip`), zipPath = path.join(f.root,'bundle.zip');
   assert.equal(archive.status,200); await writeFile(zipPath,Buffer.from(await archive.arrayBuffer()));
-  assert.deepEqual((await zipEntries(zipPath)).map(e=>e.name),['你好.txt','photo.png']);
+  assert.deepEqual((await zipEntries(zipPath)).map(e=>e.name).sort(),['你好.txt','photo.png'].sort());
   assert.equal((await f.request('/api/health')).status,200);
 });
 

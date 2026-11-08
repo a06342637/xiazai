@@ -32,6 +32,16 @@ docker compose version >/dev/null || { echo "需要 Docker Compose v2 插件，�
 mkdir -p "$DEPLOY"
 chmod 700 "$ROOT" "$DEPLOY"
 
+# Rerunning setup must not replace an active Compose configuration or roll it back.
+if [[ -f "$DEPLOY/.env" && -s "$ROOT/accounts.json" ]]; then
+  [[ -f "$DEPLOY/compose.yml" ]] || { echo "已有账号但缺少部署配置，请恢复 compose.yml；不会覆盖数据。"; exit 1; }
+  echo "检测到已有部署，保留账号、数据、配置和当前镜像。"
+  docker compose --project-directory "$DEPLOY" up -d --wait --wait-timeout 180
+  echo "访问：http://服务器IP:$(sed -n 's/^PORT=//p' "$DEPLOY/.env")"
+  echo "在线升级请在管理员设置中执行。"
+  exit 0
+fi
+
 echo "正在获取最新正式版本…"
 # Resolve latest through the official API; some networks time out on GitHub's latest redirect.
 curl -fsSL --retry 3 "https://api.github.com/repos/$REPO/releases/latest" -o "$TMP/latest.json"
@@ -48,7 +58,7 @@ cp "$TMP/compose.yml" "$DEPLOY/compose.yml"
 cp "$TMP/reset-admin.sh" "$DEPLOY/reset-admin.sh"
 chmod 700 "$DEPLOY/reset-admin.sh"
 
-if [[ ! -f "$DEPLOY/.env" ]]; then
+if [[ ! -f "$DEPLOY/.env" || ! -s "$ROOT/accounts.json" ]]; then
   USERNAME="${XIAZAI_ADMIN_USERNAME:-}"
   PASSWORD="${XIAZAI_ADMIN_PASSWORD:-}"
   if ( : < /dev/tty ) 2>/dev/null; then
@@ -60,6 +70,8 @@ if [[ ! -f "$DEPLOY/.env" ]]; then
   UPDATE_SECRET="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
   PORT="${XIAZAI_PORT:-8080}"
   if [[ ! "$PORT" =~ ^[0-9]+$ || "$PORT" -lt 1 || "$PORT" -gt 65535 ]]; then echo "端口无效。"; exit 1; fi
+  # Do not leave a completed-looking deployment when the initial pull fails.
+  docker pull "$IMAGE"
   cat > "$DEPLOY/.env" <<EOF
 APP_IMAGE=$IMAGE
 UPDATER_IMAGE=$IMAGE
@@ -68,7 +80,6 @@ PORT=$PORT
 PUBLIC_URL=
 UPDATE_KEY=$UPDATE_SECRET
 EOF
-  docker pull "$IMAGE"
   # Password is sent on stdin and never put in command-line arguments or .env.
   printf '%s\0%s' "$USERNAME" "$PASSWORD" | docker run --rm -i "$IMAGE" node -e 'let b=[];process.stdin.on("data",c=>b.push(c));process.stdin.on("end",()=>{const s=Buffer.concat(b).toString().split("\0");process.stdout.write(JSON.stringify({username:s[0],password:s[1]}))})' > "$TMP/admin.json"
   if ! docker compose --project-directory "$DEPLOY" run --rm -T --no-deps app node scripts/bootstrap-admin.mjs < "$TMP/admin.json"; then

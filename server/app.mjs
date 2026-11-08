@@ -32,18 +32,22 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     req.sessionToken = req.headers.cookie?.split(';').map(s => s.trim()).find(s => s.startsWith('xiazai_session='))?.slice(15);
     req.user = auth.userFor(req.sessionToken); next();
   });
-  // State-changing requests must originate from this site. Proxy Host must be preserved.
+  // Preserve the proxy Host and compare full origins, including protocol and port.
   app.use((req, res, next) => {
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin) {
-      let host;
-      try { host = new URL(req.headers.origin).host; } catch { return next(httpError(403, '请求来源无效')); }
-      if (host !== req.get('host')) return next(httpError(403, '请求来源不允许'));
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      if (req.headers['sec-fetch-site'] === 'cross-site') return next(httpError(403, '请求来源不允许'));
+      if (req.headers.origin) {
+        let origin;
+        try { origin = new URL(req.headers.origin).origin; } catch { return next(httpError(403, '请求来源无效')); }
+        const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+        if (origin !== `${protocol}://${req.get('host')}`) return next(httpError(403, '请求来源不允许'));
+      }
     }
     next();
   });
   app.use(express.json({ limit: '32kb' }));
   app.use((req, res, next) => {
-    if (['/api/auth/login', '/api/auth/register', '/api/auth/password'].includes(req.path) && !['GET','HEAD'].includes(req.method) &&
+    if (['/api/auth/login', '/api/auth/register', '/api/auth/password'].includes(req.path.toLowerCase().replace(/\/+$/, '')) && !['GET','HEAD'].includes(req.method) &&
         (!req.body || typeof req.body !== 'object' || Array.isArray(req.body))) return next(httpError(400, '请输入有效的用户名和密码信息'));
     next();
   });
@@ -61,6 +65,7 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
   const authRate = (req, res, next) => {
     const key = req.socket.remoteAddress, now = clock();
     const previous = failures.get(key), attempt = previous && previous.until > now ? previous : { count: 0, until: now + 600000 };
+    if (!previous && failures.size >= 10000) { for(const [key,entry] of failures)if(entry.until <= now)failures.delete(key); if(failures.size >= 10000)return next(httpError(429, '请求过于频繁，请稍后再试')); }
     if (attempt.count >= 30) return next(httpError(429, '请求过于频繁，请 10 分钟后再试'));
     attempt.count++; failures.set(key, attempt);
     if (failures.size > 10000) for (const [k, v] of failures) if (v.until < now) failures.delete(k);
@@ -154,10 +159,12 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
   };
   const zipLimit = (req, res, next) => {
     if (zipReaders >= 2) return next(httpError(429, '当前解压任务较多，请稍后再试'));
-    zipReaders++; let released = false;
+    zipReaders++; let released = false, taskDone = false, responseDone = false;
     const controller = new AbortController(); req.zipSignal = controller.signal;
-    const abort = () => {if(!res.writableFinished)controller.abort();};res.on('close', abort);
-    req.releaseZip = () => { if (!released) { released = true; zipReaders--; res.off('close', abort); } };
+    const release = () => {if(!released && taskDone && responseDone){released=true;zipReaders--;res.off('close',closed);res.off('finish',finished);}};
+    const closed = () => {if(!res.writableFinished)controller.abort();responseDone=true;release();};
+    const finished = () => {responseDone=true;release();};res.on('close',closed);res.on('finish',finished);
+    req.releaseZip = () => {taskDone=true;release();};
     next();
   };
   app.get('/api/transfers/:id/files/:fileId/entries', zipLimit, async (req, res) => {
@@ -215,7 +222,8 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
       release(); if (error && !res.headersSent) next(error); else if (error) res.destroy();
     });
   });
-  app.get('/api/transfers/:id/zip', async (req, res) => {
+  app.head('/api/transfers/:id/zip', (req, res) => {const transfer=transferFor(req);res.attachment(`xiazai-${transfer.id.slice(0,8)}.zip`).set('Cache-Control','no-store').end();});
+  app.get('/api/transfers/:id/zip', zipLimit, async (req, res) => {
     const transfer = transferFor(req), release = store.acquire(transfer);
     const archive = new ZipArchive({ zlib: { level: 0 } });
     res.attachment(`xiazai-${transfer.id.slice(0, 8)}.zip`).set('Cache-Control', 'no-store');
@@ -229,7 +237,7 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
       while (names.has(name)) { count++; name = `${path.parse(file.name).name} (${count})${path.extname(file.name)}`; }
       names.add(name); archive.file(store.filePath(transfer.id, file.id), { name });
     }
-    await archive.finalize();
+    try { await archive.finalize(); } finally { req.releaseZip(); }
   });
   app.get('/api/admin/settings', async (req, res) => res.json({ settings: store.settings, stats: await store.stats(),
     version: pkg.version, updateEnabled: Boolean(updaterUrl && updateKey), update: await updateState() }));
@@ -272,6 +280,7 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     res.status(status).json({ error: message });
   });
   const scheduler = setInterval(() => {
+    for(const [key,entry] of failures)if(entry.until <= clock())failures.delete(key);
     for(const [token, access] of zipAccess)if(access.expiresAt <= clock())zipAccess.delete(token);
     for(const [key, attempt] of zipAttempts)if(attempt.until <= clock())zipAttempts.delete(key);
     if (clock() >= store.system.lastCleanupAt + store.settings.cleanupIntervalHours * 3600000) store.cleanup().catch(e => console.error('清理失败:', e.message));

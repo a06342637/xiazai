@@ -93,6 +93,13 @@ try {
   await page.getByLabel('用户名',{exact:true}).fill('admin'); await page.getByLabel('密码',{exact:true}).fill('smoke-admin-password');
   await page.locator('#auth-submit').click(); await page.getByRole('button',{name:'admin',exact:true}).waitFor();
   await page.getByRole('button',{name:'打开设置'}).click(); await page.getByText('系统升级',{exact:false}).waitFor();
+  await page.getByRole('button',{name:'关闭设置',exact:true}).click();
+  let releaseSettings;
+  const waitingSettings=new Promise(resolve=>{releaseSettings=resolve;});
+  await page.route('**/api/admin/settings',async route=>{if(route.request().method()!=='GET')return route.continue();await waitingSettings;await route.continue();});
+  await page.getByRole('button',{name:'打开设置'}).click();await page.getByRole('button',{name:'关闭设置',exact:true}).click();releaseSettings();await page.waitForTimeout(150);
+  assert.equal(await page.locator('#settings-form').count(),0);await page.unroute('**/api/admin/settings');
+  await page.getByRole('button',{name:'打开设置'}).click();await page.getByText('系统升级',{exact:false}).waitFor();
   await page.locator('input[name=retentionHours]').fill('72'); await page.getByRole('button',{name:'保存设置'}).click(); await page.getByText('设置已保存',{exact:true}).waitFor();
   assert.equal((await (await context.request.get(base+'/api/config')).json()).retentionHours,72);
   await page.getByText('磁盘剩余可用',{exact:true}).waitFor();

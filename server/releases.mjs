@@ -36,7 +36,7 @@ export async function getRelease(version, fetcher = fetch) {
   if (!response.ok) throw httpError(502, '无法读取更新清单');
   let manifest;
   try { manifest = await response.json(); } catch { throw httpError(502, '更新清单格式错误'); }
-  if (!manifest || typeof manifest !== 'object' || manifest.version !== target || !new RegExp(`^${IMAGE_PREFIX}[a-f0-9]{64}$`).test(manifest.image) || manifest.schema !== 1) throw httpError(502, '更新清单校验失败');
+  if (!manifest || typeof manifest !== 'object' || manifest.version !== target || typeof manifest.image !== 'string' || !manifest.image.startsWith(IMAGE_PREFIX) || !/^[a-f0-9]{64}$/.test(manifest.image.slice(IMAGE_PREFIX.length)) || manifest.schema !== 1) throw httpError(502, '更新清单校验失败');
   return { version: target, image: manifest.image, notes: (release.body || '').slice(0, 12000),
     publishedAt: release.published_at, url: release.html_url };
 }

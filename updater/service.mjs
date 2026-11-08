@@ -32,7 +32,7 @@ export class Updater {
     try { env = await readFile(envFile,'utf8'); } catch(error) { if(error.code==='ENOENT') return; throw error; }
     const next = /^APP_IMAGE=.*$/m.test(env) ? env.replace(/^APP_IMAGE=.*$/m,`APP_IMAGE=${image}`) : `${env}\nAPP_IMAGE=${image}\n`;
     const temporary = `${envFile}.upgrade.tmp`;
-    await writeFile(temporary,next,{mode:0o600}); await rename(temporary,envFile);
+    await writeFile(temporary,next,{mode:0o600,flush:true}); await rename(temporary,envFile);
   }
   async recover() {
     const state = await this.state();
@@ -45,8 +45,10 @@ export class Updater {
     const old = await this.docker.inspect(state.originalId).catch(e => { if(e.status===404) return null; throw e; });
     if (!old) throw new Error('无法找到原版本容器，请检查 Docker 状态');
     if (!old.State.Running) await this.docker.start(old.Id);
+    if(old.Name!==`/${this.appName}`)await this.docker.rename(old.Id,this.appName);
     if (state.candidateName) await this.docker.remove(state.candidateName).catch(e => { if(e.status!==404) throw e; });
     await this.persistImage(old.Config.Image);
+    await this.health(old.Id);
     await this.save('failed','升级任务中断，已恢复原版本，请重新检查更新');
   }
   async rollback(backupName, candidateName) {
@@ -65,6 +67,7 @@ export class Updater {
     if (this.busy) throw Object.assign(new Error('已有升级任务正在运行'),{status:409});
     this.busy = true;
     try {
+      if ((await this.state()).phase === 'recovery_required') throw Object.assign(new Error('上次升级尚未恢复，请在服务器重启升级服务完成恢复'),{status:409});
       const release = await this.releaseFetcher(version), original = await this.docker.inspect(this.appName);
       const current = original.Config.Labels?.['org.opencontainers.image.version'];
       if (!newer(release.version,current)) throw Object.assign(new Error('当前版本已是最新版本'),{status:409});
@@ -104,7 +107,7 @@ export class Updater {
           await this.persistImage(original.Config.Image);
           await this.save('failed',`升级未完成：${error.message}。原版本继续运行，请稍后重试。`);
         }
-      } catch(rollbackError) { await this.save('failed',`自动恢复未完成：${rollbackError.message}。请在服务器检查 Docker 容器。`); }
+      } catch(rollbackError) { await this.save('recovery_required',`自动恢复未完成：${rollbackError.message}。请在服务器重启升级服务继续恢复。`); }
     } finally { this.busy = false; }
   }
 }

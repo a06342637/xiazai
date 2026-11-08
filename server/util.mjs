@@ -18,7 +18,7 @@ export async function atomicJson(filename, value) {
   await mkdir(path.dirname(filename), { recursive: true });
   const temporary = `${filename}.${randomBytes(6).toString('hex')}.tmp`;
   try {
-    await writeFile(temporary, JSON.stringify(value, null, 2), { mode: 0o600 });
+    await writeFile(temporary, JSON.stringify(value, null, 2), { mode: 0o600, flush: true });
     await rename(temporary, filename);
   } finally { await rm(temporary, { force: true }); }
 }

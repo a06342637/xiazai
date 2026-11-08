@@ -71,3 +71,11 @@ test('Docker rename timeout restores a backup created before the failed response
   docker.rename=async(name,replacement)=>{await rename(name,replacement);if(!failed&&name==='old'&&replacement.includes('backup')){failed=true;throw new Error('response timed out after rename');}};
   await updater.run(await updater.prepare('1.1.0'));assert.equal((await docker.inspect('xiazai')).Id,'old');assert.equal((await docker.inspect('xiazai')).State.Running,true);
 });
+
+test('incomplete rollback prevents another update and restart resumes restoration',async t=>{
+  const {docker,updater}=await fixture(t,{unhealthy:true});const rename=docker.rename.bind(docker);let failRestore=true;
+  docker.rename=async(name,replacement)=>{if(failRestore&&name==='old'&&replacement==='xiazai')throw new Error('restore temporarily unavailable');return rename(name,replacement);};
+  await updater.run(await updater.prepare('1.1.0'));assert.equal((await updater.state()).phase,'recovery_required');
+  await assert.rejects(updater.prepare('1.1.0'),{status:409});failRestore=false;await updater.recover();
+  assert.equal((await docker.inspect('xiazai')).State.Running,true);assert.equal((await updater.state()).phase,'rolled_back');
+});

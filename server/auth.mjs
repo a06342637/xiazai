@@ -2,8 +2,10 @@ import { randomBytes, scrypt as scryptCallback, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { atomicJson, readJson, secretEqual, id, httpError } from './util.mjs';
+import { WorkPool } from './work-pool.mjs';
 
 const scrypt = promisify(scryptCallback);
+const passwordWork = new WorkPool(2, 16);
 const hashToken = value => createHash('sha256').update(value).digest('hex');
 export const publicUser = user => user ? { id: user.id, username: user.username, role: user.role, createdAt: user.createdAt } : null;
 export function validateUsername(value) {
@@ -16,18 +18,23 @@ export function validatePassword(value) {
 }
 export async function passwordHash(password) {
   const salt = randomBytes(16).toString('hex');
-  const hash = await scrypt(password, salt, 64);
+  const hash = await passwordWork.run(() => scrypt(password, salt, 64));
   return `${salt}:${hash.toString('hex')}`;
 }
 export async function passwordMatches(password, encoded) {
   if (typeof password !== 'string' || password.length > 128) return false;
+  if (typeof encoded !== 'string' || !/^[a-f0-9]{32}:[a-f0-9]{128}$/.test(encoded)) return false;
   const [salt, expected] = encoded.split(':');
-  return secretEqual((await scrypt(password, salt, 64)).toString('hex'), expected);
+  return secretEqual((await passwordWork.run(() => scrypt(password, salt, 64))).toString('hex'), expected);
 }
 export class Auth {
   constructor(root, clock = Date.now) { this.file = path.join(root, 'accounts.json'); this.clock = clock; this.queue = Promise.resolve(); }
   async init(username, password) {
     this.db = await readJson(this.file, { users: [], sessions: [] });
+    if(!this.db || !Array.isArray(this.db.users) || !Array.isArray(this.db.sessions) ||
+      !this.db.users.every(u=>u && typeof u.id==='string' && typeof u.username==='string' && ['admin','guest'].includes(u.role) && /^[a-f0-9]{32}:[a-f0-9]{128}$/.test(u.password)) ||
+      new Set(this.db.users.map(u=>u.id)).size!==this.db.users.length || new Set(this.db.users.map(u=>u.username.toLowerCase())).size!==this.db.users.length)throw new Error('账号库无效，请从备份恢复 accounts.json；不会自动重建或覆盖账号');
+    this.db.sessions=this.db.sessions.filter(s=>s && typeof s.hash==='string' && /^[a-f0-9]{64}$/.test(s.hash) && Number.isSafeInteger(s.expiresAt) && s.expiresAt>this.clock() && this.db.users.some(u=>u.id===s.userId));
     if (!this.db.users.some(u => u.role === 'admin')) {
       validateUsername(username); validatePassword(password);
       this.db.users.push({ id: id(), username, role: 'admin', password: await passwordHash(password), createdAt: this.clock() });
@@ -56,7 +63,7 @@ export class Auth {
     });
   }
   async login(username, password) {
-    if (typeof username !== 'string') throw httpError(400, '请输入用户名和密码');
+    validateUsername(username); validatePassword(password);
     const user = this.findByName(username);
     // Equal-cost dummy hash prevents a timing oracle for unknown users.
     if (!await passwordMatches(password, user?.password || `${'0'.repeat(32)}:${'0'.repeat(128)}`) || !user) throw httpError(401, '用户名或密码错误');

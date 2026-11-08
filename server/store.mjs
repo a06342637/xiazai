@@ -1,4 +1,4 @@
-import { mkdir, readdir, rename, rm } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { atomicJson, readJson, validId, httpError } from './util.mjs';
 import { DiskGuard } from './disk.mjs';
@@ -43,7 +43,7 @@ export function validateSettings(input, previous = defaults) {
 export class Store {
   constructor(root, clock = Date.now, diskProbe) {
     this.root = path.resolve(root); this.clock = clock; this.transfers = new Map();
-    this.readers = new Map(); this.deleting = new Set(); this.usedBytes = 0;
+    this.readers = new Map(); this.deleting = new Set(); this.usedBytes = 0; this.recoveryIssues = [];
     this.disk = new DiskGuard(this.root, diskProbe);
     this.settingsQueue = Promise.resolve(); this.cleanupQueue = Promise.resolve();
   }
@@ -59,11 +59,26 @@ export class Store {
     for (const name of await readdir(this.uploadsDir)) {
       if (!validId(name)) continue;
       const folder = path.join(this.uploadsDir, name);
-      const transfer = await readJson(path.join(folder, 'meta.json'), null);
-      if (!transfer) { await rm(folder, { recursive: true, force: true }); continue; }
-      if (transfer.id !== name || !Array.isArray(transfer.files) || !transfer.files.every(file => validId(file.id) && Number.isSafeInteger(file.size) && file.size >= 0)) throw new Error(`损坏的文件记录: ${name}`);
-      transfer.totalSize = transfer.files.reduce((n, f) => n + f.size, 0);
-      this.transfers.set(name, transfer); this.usedBytes += transfer.totalSize;
+      try {
+        if (!(await lstat(folder)).isDirectory() || (await lstat(path.join(folder, 'meta.json'))).isSymbolicLink()) throw new Error('文件目录无效');
+        const transfer = await readJson(path.join(folder, 'meta.json'), null);
+        if (!transfer || transfer.id !== name || !Array.isArray(transfer.files) || !transfer.files.length ||
+          !Number.isSafeInteger(transfer.createdAt) || transfer.createdAt < 0 ||
+          !(transfer.expiresAt === null || Number.isSafeInteger(transfer.expiresAt) && transfer.expiresAt > 0) ||
+          !transfer.files.every(file => validId(file.id) && typeof file.name === 'string' && file.name.length > 0 && !/[\x00-\x1f\x7f]/.test(file.name) && Number.isSafeInteger(file.size) && file.size >= 0) ||
+          new Set(transfer.files.map(file=>file.id)).size !== transfer.files.length) throw new Error('文件记录格式无效');
+        for (const file of transfer.files) {
+          const info = await lstat(path.join(folder, file.id));
+          if (!info.isFile() || info.size !== file.size) throw new Error('文件缺失、大小不符或不安全');
+        }
+        transfer.totalSize = transfer.files.reduce((n, f) => n + f.size, 0);
+        if (!Number.isSafeInteger(transfer.totalSize)) throw new Error('文件总大小无效');
+        this.transfers.set(name, transfer); this.usedBytes += transfer.totalSize;
+      } catch (error) {
+        // Keep the original bytes for recovery; one bad share must not stop all healthy shares.
+        this.recoveryIssues.push({ id: name, reason: error.code === 'ENOENT' ? '文件或记录缺失' : '文件记录损坏或不完整' });
+        console.error(`已隔离不完整分享 ${name}，原文件保留待恢复`);
+      }
     }
     await this.cleanup();
   }
@@ -111,8 +126,9 @@ export class Store {
         } finally { this.deleting.delete(key); }
         deletedTransfers++; deletedBytes += transfer.totalSize;
       }
-      this.system.lastCleanupAt = this.clock();
-      await atomicJson(path.join(this.root, 'system.json'), this.system);
+      const nextSystem = { ...this.system, lastCleanupAt: this.clock() };
+      await atomicJson(path.join(this.root, 'system.json'), nextSystem);
+      this.system = nextSystem;
       return { deletedTransfers, deletedBytes };
     });
     this.cleanupQueue = task.catch(() => {}); return task;
@@ -133,6 +149,7 @@ export class Store {
   async stats() {
     const active = [...this.transfers.values()].filter(t => isActive(t, this.clock()));
     return { usedBytes: this.usedBytes, disk: await this.disk.info(), totalTransfers: this.transfers.size,
+      recoveryIssues: this.recoveryIssues,
       activeTransfers: active.length, expiredTransfers: this.transfers.size - active.length,
       lastCleanupAt: this.system.lastCleanupAt,
       nextCleanupAt: this.system.lastCleanupAt + this.settings.cleanupIntervalHours * 3600000 };

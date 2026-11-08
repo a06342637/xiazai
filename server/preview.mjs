@@ -21,6 +21,7 @@ export async function textPreview(filename, name) {
 }
 function validateEntry(entry) {
   const name = entry.fileName;
+  if (Buffer.byteLength(name, 'utf8') > 4096) throw httpError(413, 'ZIP 文件名过长，无法在线查看');
   if (name.includes('\\') || name.startsWith('/') || /^[a-z]:/i.test(name) || name.split('/').includes('..') || /[\x00-\x1f]/.test(name)) throw httpError(400, 'ZIP 包含不安全路径');
   if (!Number.isSafeInteger(entry.uncompressedSize) || entry.uncompressedSize > 100 * MiB) throw httpError(413, 'ZIP 内单个文件最大支持 100 MB');
   if (entry.uncompressedSize > MiB && entry.uncompressedSize / Math.max(entry.compressedSize, 1) > 200) throw httpError(413, 'ZIP 压缩率过高，无法在线解压');
@@ -28,12 +29,14 @@ function validateEntry(entry) {
 export async function zipEntries(filename) {
   const zip = await openZip(filename, { lazyEntries: true, autoClose: true, validateEntrySizes: true }).catch(() => { throw httpError(400, 'ZIP 文件损坏或不支持'); });
   return new Promise((resolve, reject) => {
-    const entries = []; let total = 0, settled = false;
+    const entries = []; let total = 0, metadataBytes = 0, settled = false;
     const fail = error => { if (!settled) { settled = true; zip.close(); reject(error.status ? error : httpError(400, 'ZIP 文件损坏或不支持')); } };
     zip.on('error', fail);
     zip.on('entry', entry => {
       try {
         validateEntry(entry); total += entry.uncompressedSize;
+        metadataBytes += Buffer.byteLength(entry.fileName, 'utf8') + Buffer.byteLength(entry.fileComment || '', 'utf8') + 46 + entry.extraFields.reduce((n,field)=>n+field.data.length+4,0);
+        if(metadataBytes > 4 * MiB)throw httpError(413, 'ZIP 目录信息过大，请下载到本地查看');
         if (entries.length >= 2000 || total > 500 * MiB) throw httpError(413, 'ZIP 目录超过 2000 项或解压总大小超过 500 MB');
         entries.push({ index: entries.length, name: entry.fileName, size: entry.uncompressedSize, directory: entry.fileName.endsWith('/'), encrypted: Boolean(entry.generalPurposeBitFlag & 1) });
         zip.readEntry();
@@ -45,6 +48,7 @@ export async function zipEntries(filename) {
 class FileReader extends Reader {
   constructor(handle, size) { super(); this.handle = handle; this.size = size; }
   async readUint8Array(index, length) {
+    if(!Number.isSafeInteger(index) || !Number.isSafeInteger(length) || index < 0 || length < 0 || length > 8 * MiB)throw httpError(413, 'ZIP 读取范围过大或无效，请下载到本地查看');
     const buffer = Buffer.alloc(Math.min(length, Math.max(0, this.size - index)));
     let offset = 0;
     while (offset < buffer.length) {
