@@ -9,6 +9,7 @@ export class Docker {
       const req = http.request({ socketPath: this.socket, path: url, method,
         headers: encoded ? {'Content-Type':'application/json','Content-Length':Buffer.byteLength(encoded)} : {} }, res => {
         const chunks = []; let bytes = 0;
+        res.on('error', reject); res.on('aborted', () => reject(new Error('Docker connection closed before response completed')));
         res.on('data', chunk => { bytes += chunk.length; if (bytes > 4 * 1024 ** 2) { req.destroy(new Error('Docker response too large')); } else chunks.push(chunk); });
         res.on('end', () => {
           let value;
@@ -41,7 +42,13 @@ export class Docker {
             catch (error) { return fail(error); }
           }
         });
-        res.on('end', () => { if (!ended) { ended = true; resolve(); } }); res.on('error', fail);
+        res.on('end', () => {
+          if (ended) return;
+          try { if (buffer.trim()) { const event = JSON.parse(buffer); if(event.error) return fail(new Error(event.error)); } }
+          catch { return fail(new Error('镜像拉取响应不完整')); }
+          ended = true; resolve();
+        });
+        res.on('error', fail); res.on('aborted', () => fail(new Error('镜像下载连接中断')));
       });
       req.setTimeout(600000, () => req.destroy(new Error('镜像拉取超时，请稍后重试')));
       req.on('error', reject); req.end();

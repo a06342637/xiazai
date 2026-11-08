@@ -68,6 +68,22 @@ try {
   await shared.getByRole('button',{name:'预览 picture.png'}).click();await shared.locator('#preview-content img').waitFor();
   await shared.waitForFunction(()=>document.querySelector('#preview-content img')?.naturalWidth>0);
   await shared.screenshot({path:path.join(artifacts,'encrypted-zip.png'),fullPage:true});
+  await shared.getByRole('button',{name:'关闭预览'}).click();
+  // A closed or replaced preview must ignore late responses from an older request.
+  let releaseZip;
+  const waitingZip = new Promise(resolve => { releaseZip = resolve; });
+  await shared.route('**/entries', async route => { await waitingZip; await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({entries:[{index:0,name:'late.txt',size:1,directory:false}]})}); });
+  await shared.getByRole('button',{name:'预览 sample.zip',exact:true}).click();
+  await shared.getByRole('button',{name:'关闭预览'}).click();releaseZip();await shared.waitForTimeout(100);
+  assert.equal(await shared.locator('#preview-content').textContent(),'');
+  await shared.unroute('**/entries');
+  let releaseText;
+  const waitingText = new Promise(resolve => {releaseText = resolve;});
+  await shared.route('**/preview',async route=>{await waitingText;await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({text:'stale preview must not appear'})});});
+  await shared.getByRole('button',{name:'预览 你好.txt',exact:true}).click();await shared.getByRole('button',{name:'关闭预览'}).click();releaseText();await shared.waitForTimeout(100);
+  assert.equal(await shared.locator('#preview-content').textContent(),'');await shared.unroute('**/preview');
+  await page.getByRole('button',{name:'继续发送'}).click();await page.locator('#file-input').setInputFiles([textFile]);await page.getByText('文件准备好了',{exact:true}).waitFor();
+  assert.equal(await page.locator('#copy-label').textContent(),'已复制');
   await page.getByRole('button',{name:'我的文件',exact:true}).click(); await page.getByRole('heading',{name:'我的文件'}).waitFor();
   await page.getByRole('button',{name:'打开设置'}).click(); await page.getByText('你已登录普通账号。',{exact:false}).waitFor();
   await page.getByRole('button',{name:'关闭设置',exact:true}).click();
@@ -87,6 +103,9 @@ try {
   await page.locator('#storage-stats').scrollIntoViewIfNeeded();
   await page.screenshot({path:path.join(artifacts,'admin-settings.png'),fullPage:true});
   await page.getByRole('button',{name:'关闭设置',exact:true}).click();
+  await page.getByRole('button',{name:'admin',exact:true}).click();
+  await page.locator('#current-password').fill('smoke-admin-password');await page.locator('#new-password').fill('changed-smoke-admin-password');await page.getByRole('button',{name:'修改密码',exact:true}).click();
+  await page.locator('#auth-dialog[open]').waitFor();await page.getByLabel('用户名',{exact:true}).fill('admin');await page.getByLabel('密码',{exact:true}).fill('changed-smoke-admin-password');await page.locator('#auth-submit').click();await page.getByRole('button',{name:'admin',exact:true}).waitFor();
   await page.getByRole('button',{name:'切换深色模式'}).click(); await page.screenshot({path:path.join(artifacts,'dark.png'),fullPage:true});
   const mobile=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true}); const phone=await mobile.newPage(); await phone.goto(base); await phone.getByText('大小、数量不限',{exact:false}).waitFor();
   assert.ok(await phone.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));

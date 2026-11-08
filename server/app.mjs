@@ -1,14 +1,13 @@
 import express from 'express';
 import { ZipArchive } from 'archiver';
 import { mkdir, rm, readFile } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { id, readJson, secretEqual, MiB, terminal, httpError } from './util.mjs';
+import { id, readJson, MiB, terminal, httpError } from './util.mjs';
 import { Store } from './store.mjs';
 import { parseUpload } from './upload.mjs';
 import { getRelease, newer } from './releases.mjs';
-import { Auth, publicUser } from './auth.mjs';
+import { Auth } from './auth.mjs';
 import { previewType, isText, textPreview, zipEntries, readZipEntry, unlockZip } from './preview.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
@@ -43,6 +42,11 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     next();
   });
   app.use(express.json({ limit: '32kb' }));
+  app.use((req, res, next) => {
+    if (['/api/auth/login', '/api/auth/register', '/api/auth/password'].includes(req.path) && !['GET','HEAD'].includes(req.method) &&
+        (!req.body || typeof req.body !== 'object' || Array.isArray(req.body))) return next(httpError(400, '请输入有效的用户名和密码信息'));
+    next();
+  });
   const requireUser = (req, res, next) => req.user ? next() : next(httpError(401, '请先登录'));
   app.use('/api/admin', (req, res, next) => {
     if (!req.user) return next(httpError(401, '请先登录管理员账号'));
@@ -50,7 +54,8 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     next();
   });
   const cookie = (req, res, value, clear = false) => {
-    const secure = req.secure || (publicUrl || store.settings.publicUrl).startsWith('https://');
+    // The share URL may be HTTPS while an administrator accesses the HTTP origin.
+    const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
     res.cookie('xiazai_session', value, { httpOnly: true, sameSite: 'lax', secure, path: '/', maxAge: clear ? 0 : 7 * 86400000 });
   };
   const authRate = (req, res, next) => {
@@ -77,8 +82,9 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     cookie(req, res, '', true); res.json({ ok: true });
   });
   app.get('/api/history', requireUser, (req, res) => {
-    const page = Math.max(1, Number(req.query.page) || 1), pageSize = 20;
+    const requested = Number(req.query.page), pageSize = 20;
     const all = [...store.transfers.values()].filter(t => t.ownerId === req.user.id).sort((a, b) => b.createdAt - a.createdAt);
+    const page = Math.min(Number.isSafeInteger(requested) && requested > 0 ? requested : 1, Math.max(1, Math.ceil(all.length / pageSize)));
     res.json({ transfers: all.slice((page - 1) * pageSize, page * pageSize), total: all.length, page, pageSize });
   });
   app.delete('/api/history/:id', requireUser, async (req, res) => {
@@ -113,8 +119,8 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
       const { ownerId, ...shared } = transfer;
       res.status(201).json({ ...shared, sharePath: `/s/${transferId}` });
     } finally {
-      activeUploads--;
-      await rm(folder, { recursive: true, force: true });
+      try { await rm(folder, { recursive: true, force: true }); }
+      finally { activeUploads--; }
     }
   });
   const transferFor = req => {
@@ -149,8 +155,10 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
   const zipLimit = (req, res, next) => {
     if (zipReaders >= 2) return next(httpError(429, '当前解压任务较多，请稍后再试'));
     zipReaders++; let released = false;
-    const release = () => { if (!released) { released = true; zipReaders--; } };
-    res.on('close', release); res.on('finish', release); next();
+    const controller = new AbortController(); req.zipSignal = controller.signal;
+    const abort = () => {if(!res.writableFinished)controller.abort();};res.on('close', abort);
+    req.releaseZip = () => { if (!released) { released = true; zipReaders--; res.off('close', abort); } };
+    next();
   };
   app.get('/api/transfers/:id/files/:fileId/entries', zipLimit, async (req, res) => {
     const { transfer, file, filename } = previewFile(req);
@@ -160,7 +168,7 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
       const entries = await zipEntries(filename);
       if (entries.some(e => e.encrypted) && !zipPassword(req, file)) throw httpError(423, '此 ZIP 已加密，请输入解压密码');
       res.json({ entries });
-    } finally { release(); }
+    } finally { release(); req.releaseZip(); }
   });
   app.post('/api/transfers/:id/files/:fileId/unlock', zipLimit, async (req, res) => {
     const { transfer, file, filename } = previewFile(req);
@@ -173,19 +181,19 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     attempt.count++; zipAttempts.set(key, attempt);
     const release = store.acquire(transfer);
     try {
-      const entries = await unlockZip(filename, req.body?.password);
+      const entries = await unlockZip(filename, req.body?.password, req.zipSignal);
       const token = id(), expiresAt = Math.min(now + 30 * 60000, transfer.expiresAt ?? Infinity);
       zipAccess.set(token, { password: req.body.password, fileId: file.id, transferId: transfer.id, expiresAt });
       zipAttempts.delete(key);
       res.json({ entries, token, expiresAt });
-    } finally { release(); }
+    } finally { release(); req.releaseZip(); }
   });
   app.get('/api/transfers/:id/files/:fileId/entries/:index', zipLimit, async (req, res) => {
     const { transfer, file, filename } = previewFile(req);
     if (!file.name.toLowerCase().endsWith('.zip')) throw httpError(415, '只支持 ZIP 压缩包');
     const release = store.acquire(transfer);
     try {
-      const entry = await readZipEntry(filename, Number(req.params.index), zipPassword(req, file));
+      const entry = await readZipEntry(filename, Number(req.params.index), zipPassword(req, file), req.zipSignal);
       if (req.query.preview === '1') {
         if (isText(entry.name)) {
           if (entry.data.length > 2 * MiB) throw httpError(413, '文本超过 2 MB，请下载查看');
@@ -195,7 +203,7 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
         if (!type) throw httpError(415, '此格式暂不支持预览，请下载查看');
         inlineHeaders(res, type); res.send(entry.data);
       } else res.attachment(entry.name).set({ 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' }).send(entry.data);
-    } finally { release(); }
+    } finally { release(); req.releaseZip(); }
   });
   app.get('/api/transfers/:id/files/:fileId', async (req, res, next) => {
     const transfer = transferFor(req), file = transfer.files.find(f => f.id === req.params.fileId);
@@ -236,9 +244,11 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
   });
   app.post('/api/admin/update', async (req, res) => {
     if (!updaterUrl || !updateKey) throw httpError(503, '在线升级需要使用配套 Docker Compose 部署');
+    if (maintenance) throw httpError(409, '已有升级任务正在准备，请稍后查看更新状态');
     if (activeUploads) throw httpError(409, '仍有文件正在上传，请上传完成后再更新');
     maintenance = true;
     try {
+      if (!terminal.has((await updateState()).phase)) throw httpError(409, '已有升级任务正在运行');
       const release = await releaseFetcher();
       if (!newer(release.version, pkg.version)) throw httpError(409, '当前已是最新版本');
       const response = await fetch(`${updaterUrl}/update`, { method: 'POST',
@@ -253,13 +263,18 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
   app.get(['/', '/s/:id'], (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
   app.use((req, res) => res.status(404).json({ error: '页面不存在' }));
   app.use((error, req, res, next) => {
+    req.releaseZip?.();
     if (res.headersSent) return res.destroy();
     const status = error.status || (error.code === 'ENOSPC' ? 507 : 500);
     if (status >= 500 && status !== 503 && status !== 507) console.error(error.message);
-    res.status(status).json({ error: status === 500 ? '服务器处理失败，请稍后重试' : error.message });
+    const message = error.type === 'entity.parse.failed' ? '请求 JSON 格式错误' : error.type === 'entity.too.large' ? '请求内容过大' :
+      error.code === 'ENOSPC' ? '服务器磁盘空间不足，已停止上传，请清理空间后重试' : status === 500 ? '服务器处理失败，请稍后重试' : error.message;
+    res.status(status).json({ error: message });
   });
   const scheduler = setInterval(() => {
+    for(const [token, access] of zipAccess)if(access.expiresAt <= clock())zipAccess.delete(token);
+    for(const [key, attempt] of zipAttempts)if(attempt.until <= clock())zipAttempts.delete(key);
     if (clock() >= store.system.lastCleanupAt + store.settings.cleanupIntervalHours * 3600000) store.cleanup().catch(e => console.error('清理失败:', e.message));
   }, 60000); scheduler.unref();
-  return { app, store, auth, version: pkg.version, close: () => { closing = true; clearInterval(scheduler); }, get activeUploads() { return activeUploads; } };
+  return { app, store, auth, version: pkg.version, close: () => { closing = true; clearInterval(scheduler); zipAccess.clear(); zipAttempts.clear(); }, get activeUploads() { return activeUploads; } };
 }

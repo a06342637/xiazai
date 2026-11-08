@@ -51,7 +51,7 @@ chmod 700 "$DEPLOY/reset-admin.sh"
 if [[ ! -f "$DEPLOY/.env" ]]; then
   USERNAME="${XIAZAI_ADMIN_USERNAME:-}"
   PASSWORD="${XIAZAI_ADMIN_PASSWORD:-}"
-  if [[ -r /dev/tty && -w /dev/tty ]]; then
+  if ( : < /dev/tty ) 2>/dev/null; then
     if [[ -z "$USERNAME" ]]; then read -r -p "管理员用户名 [回车使用 admin]：" USERNAME < /dev/tty || true; fi
     if [[ -z "$PASSWORD" ]]; then read -r -s -p "管理员密码 [回车随机生成]：" PASSWORD < /dev/tty || true; echo "" > /dev/tty; fi
   fi

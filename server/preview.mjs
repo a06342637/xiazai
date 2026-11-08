@@ -57,9 +57,9 @@ class FileReader extends Reader {
 }
 async function withZip(filename, action) {
   const handle = await open(filename, 'r');
-  const reader = new ZipReader(new FileReader(handle, (await handle.stat()).size), { useWebWorkers: false });
-  try { return await action(reader); }
-  finally { await reader.close(); await handle.close(); }
+  let reader;
+  try { reader = new ZipReader(new FileReader(handle, (await handle.stat()).size), { useWebWorkers: false }); return await action(reader); }
+  finally { try { await reader?.close(); } finally { await handle.close(); } }
 }
 async function readEntry(entry, expectedSize, password, collect, signal) {
   if (entry.encrypted && !password) throw httpError(423, '此 ZIP 已加密，请输入解压密码');
@@ -80,11 +80,11 @@ async function readEntry(entry, expectedSize, password, collect, signal) {
   }
   return collect ? Buffer.concat(chunks) : undefined;
 }
-export async function unlockZip(filename, password) {
+export async function unlockZip(filename, password, requestSignal) {
   if (typeof password !== 'string' || !password || password.length > 256) throw httpError(400, '请输入 1～256 个字符的解压密码');
   const listing = await zipEntries(filename);
   // Validate actual decrypted content and checksums, including legacy ZipCrypto's weak password header.
-  const signal = AbortSignal.timeout(30000);
+  const signal = AbortSignal.any([AbortSignal.timeout(30000), ...(requestSignal ? [requestSignal] : [])]);
   await withZip(filename, async reader => {
     let index = 0;
     for await (const entry of reader.getEntriesGenerator()) {
@@ -95,7 +95,7 @@ export async function unlockZip(filename, password) {
   });
   return listing;
 }
-export async function readZipEntry(filename, index, password) {
+export async function readZipEntry(filename, index, password, requestSignal) {
   if (!Number.isInteger(index) || index < 0 || index >= 2000) throw httpError(400, 'ZIP 文件索引无效');
   // Validate the entire archive before returning any entry.
   const listing = await zipEntries(filename), selected = listing[index];
@@ -105,7 +105,7 @@ export async function readZipEntry(filename, index, password) {
     for await (const entry of reader.getEntriesGenerator()) {
       if (cursor++ !== index) continue;
       if (entry.filename !== selected.name) throw httpError(400, 'ZIP 目录校验失败');
-      return { name: selected.name.split('/').pop(), data: await readEntry(entry, selected.size, password, true, AbortSignal.timeout(30000)) };
+      return { name: selected.name.split('/').pop(), data: await readEntry(entry, selected.size, password, true, AbortSignal.any([AbortSignal.timeout(30000), ...(requestSignal ? [requestSignal] : [])])) };
     }
     throw httpError(404, 'ZIP 内文件不存在');
   });

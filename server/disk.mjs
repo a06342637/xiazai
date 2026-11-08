@@ -14,8 +14,9 @@ export class DiskGuard {
     let fs;
     try { fs = await this.probe(this.root, { bigint: true }); }
     catch { throw httpError(503, '无法读取服务器磁盘空间，已暂停上传，请稍后重试'); }
-    const blockSize = BigInt(fs.bsize), total = BigInt(fs.blocks) * blockSize;
-    const free = BigInt(fs.bfree) * blockSize, available = BigInt(fs.bavail) * blockSize;
+    let blockSize, total, free, available;
+    try { blockSize = BigInt(fs.bsize); total = BigInt(fs.blocks) * blockSize; free = BigInt(fs.bfree) * blockSize; available = BigInt(fs.bavail) * blockSize; }
+    catch { throw httpError(503, '无法读取服务器磁盘空间，已暂停上传，请稍后重试'); }
     if (blockSize <= 0n || total <= 0n || free < 0n || free > total || available < 0n || available > free) throw httpError(503, '无法读取服务器磁盘空间，已暂停上传，请稍后重试');
     const used = total - free;
     return { blockSize, total, free, available, used };

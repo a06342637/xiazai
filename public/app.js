@@ -31,7 +31,7 @@ const permanentTransfer = transfer => transfer.permanent === true || transfer.ex
 const expiryText = transfer => permanentTransfer(transfer) ? '永久保留' : `${date(transfer.expiresAt)} 到期失效`;
 const activeTransfer = transfer => permanentTransfer(transfer) || transfer.expiresAt > Date.now();
 let config = null, user = null, expiryHours = 24, request = null, toastTimer, authMode = 'login', authNext = null, page = 1, updatePoll = null, pendingDelete;
-let currentZip = null, storagePoll = null;
+let currentZip = null, storagePoll = null, previewRevision = 0, viewRevision = 0, storageRefreshing = false;
 const previewUrls = new Set();
 function clearPreviewMedia() { for (const url of previewUrls) URL.revokeObjectURL(url); previewUrls.clear(); }
 async function api(url, options = {}) {
@@ -51,12 +51,13 @@ function applyConfig(next) {
   $('#footer-version').textContent = `v${config.version}`;
   $('#upload-limit').textContent = '大小、数量不限 · 磁盘使用率达到 95% 停止上传';
   expiryHours = Math.min(24, config.retentionHours);
-  const choices = [...new Set([1, 6, 24, 72, 168].filter(n => n <= config.retentionHours).concat(config.retentionHours))].sort((a,b) => a-b);
+  const choices = [...new Set([1, 6, 24, 72, 168, expiryHours].filter(n => n <= config.retentionHours).concat(config.retentionHours))].sort((a,b) => a-b);
+  $('.option-note').textContent = '到期自动失效';
   $('#expiry-options').innerHTML = choices.map(n => `<button class="expiry-button ${n === expiryHours ? 'active':''}" data-hours="${n}">${hoursText(n)}</button>`).join('') + '<button class="expiry-button" data-hours="permanent">永久</button>';
   $('#expiry-options').querySelectorAll('button').forEach(button => button.onclick = () => { expiryHours = button.dataset.hours === 'permanent' ? 'permanent' : Number(button.dataset.hours); $('#expiry-options .active')?.classList.remove('active'); button.classList.add('active'); $('.option-note').textContent = expiryHours === 'permanent' ? '保留至手动删除' : '到期自动失效'; });
 }
 function setTheme(theme) { document.documentElement.dataset.theme = theme; try { localStorage.setItem('xiazai-theme', theme); } catch {} $('#theme-button').innerHTML = icon(theme === 'dark' ? 'moon' : 'sun'); }
-function resetUpload() { $('#dropzone').hidden = false; $('#upload-progress').hidden = true; $('#share-result').hidden = true; $('#upload-options').hidden = false; $('#file-input').value = ''; request = null; }
+function resetUpload() { $('#dropzone').hidden = false; $('#upload-progress').hidden = true; $('#share-result').hidden = true; $('#upload-options').hidden = false; $('#result-file-list').replaceChildren(); $('#copy-label').textContent = '复制链接'; $('#file-input').value = ''; request = null; }
 async function copy(text, automatic = false) {
   try {
     if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
@@ -71,7 +72,9 @@ function shareUrl(transfer) { return `${config.publicUrl || location.origin}/s/$
 function upload(files) {
   if (!config || request || !files.length) return;
   const total = [...files].reduce((n,f) => n + f.size, 0);
+  $('#share-result').hidden = true; $('#copy-label').textContent = '复制链接';
   $('#dropzone').hidden = true; $('#upload-progress').hidden = false; $('#upload-options').hidden = true;
+  document.body.dataset.view = 'upload';
   $('#progress-title').textContent = '正在上传…'; $('#progress-detail').textContent = `${files.length} 个文件 · ${bytes(total)} · 请保持页面打开`;
   $('#progress-fill').style.width = '0%'; $('#progress-percent').textContent = '0%';
   const form = new FormData(); [...files].forEach(file => form.append('files', file));
@@ -118,6 +121,7 @@ function bindFiles(panel, transfer) {
   panel.querySelectorAll('[data-expand]').forEach(button => button.onclick = async () => {
     const target = button.closest('.file-item').querySelector('.inline-preview'), file = transfer.files.find(f => f.id === button.dataset.expand);
     const expanded = button.getAttribute('aria-expanded') !== 'true';
+    const revision = String(Number(button.dataset.revision || 0) + 1); button.dataset.revision = revision;
     button.setAttribute('aria-expanded', String(expanded)); target.hidden = !expanded;
     if (!expanded) {target.replaceChildren();return;}
     const kind = fileKind(file.name), url = `/api/transfers/${transfer.id}/files/${file.id}/preview`;
@@ -127,13 +131,14 @@ function bindFiles(panel, transfer) {
       media.onerror = () => {target.textContent = '当前浏览器无法预览此格式，请下载查看。';}; target.append(media);
     } else if (kind === 'text') {
       target.textContent = '正在加载预览…';
-      try {const result = await api(url); if(target.hidden)return;const text = document.createElement('pre');text.textContent = result.text;target.replaceChildren(text);}catch(error){target.textContent = error.message;}
+      try {const result = await api(url); if(target.hidden || !target.isConnected || button.dataset.revision !== revision)return;const text = document.createElement('pre');text.textContent = result.text;target.replaceChildren(text);}catch(error){if(button.dataset.revision === revision && !target.hidden)target.textContent = error.message;}
     } else if (kind === 'zip') {
       const open = document.createElement('button'); open.className = 'secondary-button'; open.textContent = '展开 ZIP 目录 / 输入解压密码'; open.onclick = () => preview(transfer, file);target.append(open);
     } else {target.textContent = `${file.name} · ${bytes(file.size)}。此格式请下载查看。`;}
   });
 }
 function setView(view) {
+  viewRevision++;
   document.body.dataset.view = view;
   $('#upload-panel').hidden = view !== 'upload'; $('#download-panel').hidden = view !== 'download'; $('#history-panel').hidden = view !== 'history';
   $('#features').hidden = view !== 'upload'; $('#quiet-note').hidden = view !== 'upload';
@@ -141,43 +146,52 @@ function setView(view) {
 async function renderShare(id) {
   setView('download'); $('#hero h1').innerHTML = '文件已抵达，<span>请查收。</span>'; $('#hero>p').textContent = '先预览，再下载。无需登录，打开即用。';
   const panel = $('#download-panel'); panel.innerHTML = '<div class="empty-state"><p>正在获取文件…</p></div>';
+  const revision = viewRevision;
   try {
     const transfer = await api(`/api/transfers/${encodeURIComponent(id)}`);
+    if (revision !== viewRevision) return;
     panel.innerHTML = `<div class="download-head"><div><h2>你收到 ${transfer.files.length} 个文件</h2><p>总大小 ${bytes(transfer.totalSize)} · ${date(transfer.createdAt)} 分享</p></div><a class="primary-button" href="/api/transfers/${transfer.id}/zip">${icon('download')}打包下载</a></div><div class="file-list">${transfer.files.map(file => fileRow(transfer,file)).join('')}</div><div class="download-foot"><span>${icon('clock')}${expiryText(transfer)}</span><a href="/" class="text-button">我也要发送文件 →</a></div>`;
     bindFiles(panel, transfer);
-  } catch (error) { panel.innerHTML = `<div class="empty-state"><div class="success-icon">${icon('clock')}</div><h2>这份分享已经离开了</h2><p>${escape(error.message)}<br>请联系发送者重新上传。</p><a class="primary-button" href="/">返回首页</a></div>`; }
+  } catch (error) { if(revision === viewRevision) panel.innerHTML = `<div class="empty-state"><div class="success-icon">${icon('clock')}</div><h2>这份分享已经离开了</h2><p>${escape(error.message)}<br>请联系发送者重新上传。</p><a class="primary-button" href="/">返回首页</a></div>`; }
 }
 async function renderMedia(name, url, back, headers) {
+  const revision = ++previewRevision, archive = currentZip;
+  const current = () => revision === previewRevision && $('#preview-dialog').open;
   const content = $('#preview-content'), kind = fileKind(name);
   $('#preview-title').textContent = name;
   clearPreviewMedia(); content.replaceChildren();
   if (back) { const button = document.createElement('button'); button.className = 'secondary-button zip-header'; button.textContent = '← 返回压缩包目录'; button.onclick = back; content.append(button); }
-  const failed = () => { const notice = document.createElement('p'); notice.className = 'modal-description'; notice.textContent = '无法预览此文件，格式可能不受当前浏览器支持，请下载查看。'; content.append(notice); };
+  const failed = () => { if(!current())return;const notice = document.createElement('p'); notice.className = 'modal-description'; notice.textContent = '无法预览此文件，格式可能不受当前浏览器支持，请下载查看。'; content.append(notice); };
   if (kind === 'text') {
-    try { const result = await api(url, { headers }); const pre = document.createElement('pre'); pre.textContent = result.text; content.append(pre); } catch(error) { if(error.status === 423 && currentZip) return renderZipPassword(error.message); const p = document.createElement('p'); p.textContent = error.message; content.append(p); }
+    try { const result = await api(url, { headers }); if(!current())return;const pre = document.createElement('pre'); pre.textContent = result.text; content.append(pre); } catch(error) { if(!current())return;if(error.status === 423 && archive === currentZip && currentZip) return renderZipPassword(error.message); const p = document.createElement('p'); p.textContent = error.message; content.append(p); }
   } else if (['image','video','audio'].includes(kind)) {
-    if (headers) { try { url = await previewBlob(url, headers); } catch(error) { if(error.status === 423) return renderZipPassword(error.message); return failed(); } }
+    if (headers) { try { url = await previewBlob(url, headers, current); if(!url)return; } catch(error) { if(!current())return;if(error.status === 423 && archive === currentZip) return renderZipPassword(error.message); return failed(); } }
     const media = document.createElement(kind === 'image' ? 'img' : kind); media.src = url; media.onerror = failed;
     if (kind === 'image') media.alt = name; else { media.controls = true; media.preload = 'metadata'; }
     content.append(media);
-  } else if (kind === 'pdf') { if (headers) { try { url = await previewBlob(url, headers); } catch { return failed(); } } const frame = document.createElement('iframe'); frame.title = name; frame.src = url; content.append(frame); }
+  } else if (kind === 'pdf') { if (headers) { try { url = await previewBlob(url, headers, current); if(!url)return; } catch(error) {if(!current())return;if(error.status === 423 && archive === currentZip)return renderZipPassword(error.message);return failed();} } const frame = document.createElement('iframe'); frame.title = name; frame.src = url; content.append(frame); }
   else failed();
 }
-async function previewBlob(url, headers) {
+async function previewBlob(url, headers, current) {
   const response = await fetch(url, { headers });
   if (!response.ok) { const result = await response.json(); const error = new Error(result.error); error.status = response.status; throw error; }
-  const blobUrl = URL.createObjectURL(await response.blob()); previewUrls.add(blobUrl); return blobUrl;
+  const blob = await response.blob(); if(!current())return null;
+  const blobUrl = URL.createObjectURL(blob); previewUrls.add(blobUrl); return blobUrl;
 }
 async function preview(transfer, file) {
+  const revision = ++previewRevision; clearPreviewMedia(); currentZip = null;
   showDialog('preview-dialog'); $('#preview-title').textContent = file.name;
   const base = `/api/transfers/${transfer.id}/files/${file.id}`;
   if (fileKind(file.name) !== 'zip') return renderMedia(file.name, `${base}/preview`);
   $('#preview-content').innerHTML = '<p class="modal-description">正在读取 ZIP 目录…</p>';
   currentZip = { transfer, file, base, entries: [], token: null };
-  try { const result = await api(`${base}/entries`); currentZip.entries = result.entries; renderZip(); }
-  catch(error) { if(error.status === 423) renderZipPassword(); else $('#preview-content').textContent = error.message; }
+  const archive = currentZip;
+  try { const result = await api(`${base}/entries`); if(revision !== previewRevision || archive !== currentZip || !$('#preview-dialog').open)return;currentZip.entries = result.entries; renderZip(); }
+  catch(error) { if(revision !== previewRevision || archive !== currentZip || !$('#preview-dialog').open)return;if(error.status === 423) renderZipPassword(); else $('#preview-content').textContent = error.message; }
 }
 function renderZipPassword(message = '') {
+  if (!currentZip || !$('#preview-dialog').open) return;
+  previewRevision++;
   clearPreviewMedia(); currentZip.token = null; $('#preview-title').textContent = currentZip.file.name;
   $('#preview-content').innerHTML = `<div class="zip-unlock"><div class="success-icon">${icon('lock')}</div><h3>输入密码，打开压缩包</h3><p class="modal-description">此 ZIP 已加密，输入解压密码后即可查看和下载内部文件。</p><form id="zip-password-form"><label>解压密码<input id="zip-password" type="password" autocomplete="off" maxlength="256" required placeholder="输入 ZIP 解压密码"></label><p class="form-error" id="zip-password-error" role="alert">${escape(message)}</p><button type="submit" class="primary-button">解锁并查看</button></form></div>`;
   $('#zip-password-form').onsubmit = async event => {
@@ -187,22 +201,25 @@ function renderZipPassword(message = '') {
       const result = await api(`${archive.base}/unlock`, { method: 'POST', body: JSON.stringify({ password: $('#zip-password').value }) });
       if (currentZip !== archive || !$('#preview-dialog').open) return;
       $('#zip-password-form').reset(); Object.assign(currentZip, { entries: result.entries, token: result.token }); renderZip();
-    } catch(error) { if ($('#zip-password-error')) $('#zip-password-error').textContent = error.message; }
+    } catch(error) { if (currentZip === archive && button.isConnected && $('#zip-password-error')) $('#zip-password-error').textContent = error.message; }
     finally { if(button.isConnected) { button.disabled = false; button.textContent = '解锁并查看'; } }
   };
   $('#zip-password').focus();
 }
 function renderZip() {
+  if(!currentZip || !$('#preview-dialog').open)return;
+  previewRevision++;
   clearPreviewMedia(); const {file,base,entries,token} = currentZip; $('#preview-title').textContent = file.name;
   $('#preview-content').innerHTML = `<div class="zip-header">${icon('zip')}ZIP 在线目录 · ${entries.length} 项${token ? ' · 已解锁' : ' · 无需下载整个压缩包'}</div>${entries.map(entry => `<div class="zip-entry"><span data-icon="${entry.directory?'folder':fileKind(entry.name)}"></span><span class="entry-name">${escape(entry.name)}</span><span class="entry-size">${entry.directory?'':bytes(entry.size)}</span>${!entry.directory?`<div class="file-actions">${fileKind(entry.name)!=='file' && fileKind(entry.name)!=='zip'?`<button data-entry-preview="${entry.index}" aria-label="预览 ${escape(entry.name)}">${icon('eye')}</button>`:''}${token?`<button data-entry-download="${entry.index}" aria-label="下载 ${escape(entry.name)}">${icon('download')}</button>`:`<a href="${base}/entries/${entry.index}" aria-label="下载 ${escape(entry.name)}">${icon('download')}</a>`}</div>`:''}</div>`).join('') || '<p>压缩包为空。</p>'}`;
   decorate($('#preview-content'));
   const headers = token ? { Authorization: `ZIP ${token}` } : undefined;
   $('#preview-content').querySelectorAll('[data-entry-preview]').forEach(button => button.onclick = () => { const entry = entries[Number(button.dataset.entryPreview)]; renderMedia(entry.name, `${base}/entries/${entry.index}?preview=1`, renderZip, headers); });
   $('#preview-content').querySelectorAll('[data-entry-download]').forEach(button => button.onclick = async () => {
+    const archive = currentZip;
     const entry = entries[Number(button.dataset.entryDownload)]; button.disabled = true;
     try {
       const response = await fetch(`${base}/entries/${entry.index}`, { headers });
-      if (!response.ok) { const result = await response.json(); if(response.status === 423) return renderZipPassword(result.error); throw new Error(result.error); }
+      if (!response.ok) { const result = await response.json(); if(response.status === 423 && currentZip === archive) return renderZipPassword(result.error); throw new Error(result.error); }
       const url = URL.createObjectURL(await response.blob()), link = document.createElement('a'); link.href = url; link.download = entry.name.split('/').pop(); document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch(error) { toast(error.message); } finally {button.disabled = false;}
   });
@@ -211,14 +228,16 @@ async function showHistory(targetPage = 1) {
   if (!user) return openAuth('login', () => showHistory());
   page = targetPage; setView('history'); $('#hero h1').innerHTML = '分享过的，<span>都在这里。</span>'; $('#hero>p').textContent = '查看、复制链接，或让文件提前离开。';
   const panel = $('#history-panel'); panel.innerHTML = '<div class="empty-state"><p>正在获取历史文件…</p></div>';
+  const revision = viewRevision;
   try {
     const result = await api(`/api/history?page=${page}`);
+    if(revision !== viewRevision)return;page = result.page;
     panel.innerHTML = `<div class="history-heading"><h2>我的文件 <span class="badge">${result.total} 次分享</span></h2><a class="text-button" href="/">+ 上传文件</a></div>${result.transfers.map(t => `<article class="history-card"><h3>${escape(t.files[0].name)}${t.files.length>1?` 等 ${t.files.length} 个文件`:''}</h3><div class="history-meta"><span>${bytes(t.totalSize)}</span><span>上传于 ${date(t.createdAt)}</span><span class="${!activeTransfer(t)?'expired':''}">${!activeTransfer(t)?'已过期，等待清理':expiryText(t)}</span></div><div class="history-actions">${activeTransfer(t)?`<a class="secondary-button" href="/s/${t.id}" target="_blank">查看 / 预览</a><button class="secondary-button" data-history-copy="${t.id}">复制链接</button>`:''}<button class="danger-button" data-delete="${t.id}">${icon('trash')}删除</button></div></article>`).join('') || '<div class="empty-state"><div class="success-icon">'+icon('folder')+'</div><p>还没有上传记录。<br>登录后上传的文件会出现在这里。</p><a class="primary-button" href="/">分享第一个文件</a></div>'}${result.total>20?`<div class="pagination"><button class="secondary-button" id="previous-page" ${page===1?'disabled':''}>上一页</button><span>${page} / ${Math.ceil(result.total/20)}</span><button class="secondary-button" id="next-page" ${page*20>=result.total?'disabled':''}>下一页</button></div>`:''}`;
     panel.querySelectorAll('[data-history-copy]').forEach(b => b.onclick = () => copy(shareUrl({id:b.dataset.historyCopy})));
     panel.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => { pendingDelete = b.dataset.delete; showDialog('confirm-dialog'); });
     if ($('#previous-page')) $('#previous-page').onclick = () => showHistory(page-1);
     if ($('#next-page')) $('#next-page').onclick = () => showHistory(page+1);
-  } catch(error) { panel.innerHTML = `<div class="empty-state"><p>${escape(error.message)}</p><a href="/" class="secondary-button">返回首页</a></div>`; }
+  } catch(error) { if(revision === viewRevision)panel.innerHTML = `<div class="empty-state"><p>${escape(error.message)}</p><a href="/" class="secondary-button">返回首页</a></div>`; }
 }
 function openAuth(mode = 'login', next = null) { authNext = next; changeAuthMode(mode); showDialog('auth-dialog'); }
 function changeAuthMode(mode) {
@@ -262,9 +281,11 @@ function renderStats(stats) {
   $('#storage-stats').innerHTML = `<div class="stats-grid"><div><div class="stat-value">${bytes(disk.totalBytes)}</div><div class="stat-label">磁盘总容量</div></div><div><div class="stat-value">${bytes(disk.usedBytes)}</div><div class="stat-label">磁盘已用空间</div></div><div><div class="stat-value" id="disk-available">${bytes(disk.availableBytes)}</div><div class="stat-label">磁盘剩余可用</div></div></div><p class="settings-help ${disk.uploadAllowed ? '' : 'expired'}" id="disk-status">磁盘使用率 ${disk.usedPercent.toFixed(2)}% · ${disk.uploadAllowed ? '可以上传，达到 95% 自动停止' : '已暂停上传，请清理磁盘空间'}</p><p class="settings-help">分享文件 ${bytes(stats.usedBytes)} · 有效分享 ${stats.activeTransfers} · 待清理 ${stats.expiredTransfers}<br>上次清理 ${stats.lastCleanupAt?date(stats.lastCleanupAt):'尚未运行'} · 下次 ${date(stats.nextCleanupAt)}</p>`;
 }
 async function refreshStorage() {
-  if (!$('#settings-dialog').open || !$('#storage-stats')) return;
+  if (storageRefreshing || !$('#settings-dialog').open || !$('#storage-stats')) return;
+  storageRefreshing = true;
   try { const result = await api('/api/admin/storage'); if ($('#storage-stats')) renderStats(result.stats); }
   catch(error) { if ($('#disk-status')) $('#disk-status').textContent = `磁盘信息刷新失败：${error.message}`; }
+  finally { storageRefreshing = false; }
 }
 async function checkUpdate() {
   $('#check-update').disabled = true; $('#update-message').textContent = '正在检查最新版本…';
@@ -295,7 +316,7 @@ try { setTheme(localStorage.getItem('xiazai-theme') || 'light'); } catch { setTh
 $('#theme-button').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark'?'light':'dark');
 document.querySelectorAll('[data-close]').forEach(button => button.onclick = () => closeDialog(button.dataset.close));
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } }));
-$('#preview-dialog').addEventListener('close', () => { clearPreviewMedia(); $('#preview-content').replaceChildren(); currentZip = null; });
+$('#preview-dialog').addEventListener('close', () => { previewRevision++;clearPreviewMedia(); $('#preview-content').replaceChildren(); currentZip = null; });
 $('#settings-dialog').addEventListener('close', () => { clearInterval(updatePoll); updatePoll = null; clearInterval(storagePoll); storagePoll = null; });
 $('#select-button').onclick = event => { event.stopPropagation(); $('#file-input').click(); };
 $('#dropzone').onclick = () => $('#file-input').click();
@@ -319,7 +340,7 @@ $('#auth-form').onsubmit = async event => {
 $('#logout-button').onclick = async () => { try { await api('/api/auth/logout',{method:'POST'}); updateUser(null); closeDialog('account-dialog'); toast('已退出登录'); if(!$('#history-panel').hidden) location.href='/'; } catch(error){toast(error.message);} };
 $('#password-form').onsubmit = async event => {
   event.preventDefault(); const button = event.currentTarget.querySelector('button'); button.disabled = true;
-  try { await api('/api/auth/password',{method:'PUT',body:JSON.stringify({currentPassword:$('#current-password').value,newPassword:$('#new-password').value})}); updateUser(null); closeDialog('account-dialog'); $('#password-form').reset(); toast('密码已修改，请重新登录'); openAuth(); }
+  try { await api('/api/auth/password',{method:'PUT',body:JSON.stringify({currentPassword:$('#current-password').value,newPassword:$('#new-password').value})}); updateUser(null); closeDialog('account-dialog'); $('#password-form').reset(); toast('密码已修改，请重新登录'); openAuth('login', () => {if(!$('#history-panel').hidden)showHistory(page);}); }
   catch(error) { $('#password-error').textContent = error.message; } finally { button.disabled = false; }
 };
 $('#history-button').onclick = () => showHistory(); $('#settings-button').onclick = showSettings;

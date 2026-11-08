@@ -43,7 +43,7 @@ export function validateSettings(input, previous = defaults) {
 export class Store {
   constructor(root, clock = Date.now, diskProbe) {
     this.root = path.resolve(root); this.clock = clock; this.transfers = new Map();
-    this.readers = new Map(); this.usedBytes = 0;
+    this.readers = new Map(); this.deleting = new Set(); this.usedBytes = 0;
     this.disk = new DiskGuard(this.root, diskProbe);
     this.settingsQueue = Promise.resolve(); this.cleanupQueue = Promise.resolve();
   }
@@ -70,13 +70,14 @@ export class Store {
   get(id) {
     if (!validId(id)) return null;
     const transfer = this.transfers.get(id);
-    return transfer && isActive(transfer, this.clock()) ? transfer : null;
+    return transfer && !this.deleting.has(id) && isActive(transfer, this.clock()) ? transfer : null;
   }
   filePath(transferId, fileId) {
     if (!validId(transferId) || !validId(fileId)) throw httpError(404, '文件不存在');
     return path.join(this.uploadsDir, transferId, fileId);
   }
   acquire(transfer) {
+    if (this.deleting.has(transfer.id) || !this.get(transfer.id)) throw httpError(410, '链接已失效或文件正在删除');
     this.readers.set(transfer.id, (this.readers.get(transfer.id) || 0) + 1);
     let released = false;
     return () => {
@@ -103,8 +104,11 @@ export class Store {
       let deletedTransfers = 0, deletedBytes = 0;
       for (const [key, transfer] of this.transfers) {
         if (isActive(transfer, this.clock()) || this.readers.has(key)) continue;
-        await rm(path.join(this.uploadsDir, key), { recursive: true, force: true });
-        this.transfers.delete(key); this.usedBytes -= transfer.totalSize;
+        this.deleting.add(key);
+        try {
+          await rm(path.join(this.uploadsDir, key), { recursive: true, force: true });
+          this.transfers.delete(key); this.usedBytes -= transfer.totalSize;
+        } finally { this.deleting.delete(key); }
         deletedTransfers++; deletedBytes += transfer.totalSize;
       }
       this.system.lastCleanupAt = this.clock();
@@ -118,8 +122,11 @@ export class Store {
       const transfer = this.transfers.get(key);
       if (!transfer) throw httpError(404, '文件记录不存在');
       if (this.readers.has(key)) throw httpError(409, '有人正在下载或预览，请稍后删除');
-      await rm(path.join(this.uploadsDir, key), { recursive: true, force: true });
-      this.transfers.delete(key); this.usedBytes -= transfer.totalSize;
+      this.deleting.add(key);
+      try {
+        await rm(path.join(this.uploadsDir, key), { recursive: true, force: true });
+        this.transfers.delete(key); this.usedBytes -= transfer.totalSize;
+      } finally { this.deleting.delete(key); }
     });
     this.cleanupQueue = task.catch(() => {}); return task;
   }

@@ -46,6 +46,7 @@ export class Updater {
     if (!old) throw new Error('无法找到原版本容器，请检查 Docker 状态');
     if (!old.State.Running) await this.docker.start(old.Id);
     if (state.candidateName) await this.docker.remove(state.candidateName).catch(e => { if(e.status!==404) throw e; });
+    await this.persistImage(old.Config.Image);
     await this.save('failed','升级任务中断，已恢复原版本，请重新检查更新');
   }
   async rollback(backupName, candidateName) {
@@ -75,14 +76,14 @@ export class Updater {
     } catch(error) { this.busy = false; throw error; }
   }
   async run({release,original}) {
-    let switched = false, stopped = false, candidateId;
+    let candidateId;
     try {
       await this.docker.pull(release.image);
       // Persist intent before creating candidate, stopping or renaming the old app.
       await this.save('switching','镜像校验完成，正在切换版本');
       const candidate = await this.docker.create(this.job.candidateName,cloneConfig(original,release.image,release.version)); candidateId = candidate.Id;
-      await this.docker.stop(original.Id); stopped = true;
-      await this.docker.rename(original.Id,this.job.backupName); switched = true;
+      await this.docker.stop(original.Id);
+      await this.docker.rename(original.Id,this.job.backupName);
       await this.docker.rename(candidateId,this.appName); await this.docker.start(candidateId);
       await this.save('checking','新版已启动，正在检查服务健康状态');
       await this.health(candidateId);
@@ -92,14 +93,18 @@ export class Updater {
       await this.docker.remove(original.Id).catch(error => console.error('旧容器清理失败:',error.message));
     } catch(error) {
       console.error('升级失败:',error.message);
-      if (switched) {
-        try { await this.rollback(this.job.backupName, this.job.candidateName); }
-        catch(rollbackError) { await this.save('failed',`自动回滚未完成：${rollbackError.message}。请在服务器检查 Docker 容器。`); }
-      } else {
-        if (candidateId) await this.docker.remove(candidateId).catch(() => {});
-        if (stopped) await this.docker.start(original.Id).catch(() => {});
-        await this.save('failed',`升级未完成：${error.message}。原版本继续保留，请稍后重试。`);
-      }
+      try {
+        // A Docker request can time out after applying its mutation; inspect the actual old container.
+        const old = await this.docker.inspect(original.Id);
+        if (old.Name === `/${this.job.backupName}`) await this.rollback(this.job.backupName, this.job.candidateName);
+        else {
+          if (candidateId) await this.docker.remove(candidateId);
+          else if (this.job.phase !== 'pulling' && this.job.candidateName) await this.docker.remove(this.job.candidateName).catch(e => { if(e.status !== 404) throw e; });
+          if (!old.State.Running) { await this.docker.start(original.Id); await this.health(original.Id); }
+          await this.persistImage(original.Config.Image);
+          await this.save('failed',`升级未完成：${error.message}。原版本继续运行，请稍后重试。`);
+        }
+      } catch(rollbackError) { await this.save('failed',`自动恢复未完成：${rollbackError.message}。请在服务器检查 Docker 容器。`); }
     } finally { this.busy = false; }
   }
 }

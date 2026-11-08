@@ -1,6 +1,6 @@
 services:
   app:
-    image: ${APP_IMAGE:-ghcr.io/a06342637/xiazai:1.0.4}
+    image: ${APP_IMAGE:-ghcr.io/a06342637/xiazai:1.0.5}
     container_name: xiazai
     restart: unless-stopped
     init: true
@@ -23,7 +23,7 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
   updater:
-    image: ${UPDATER_IMAGE:-ghcr.io/a06342637/xiazai:1.0.4}
+    image: ${UPDATER_IMAGE:-ghcr.io/a06342637/xiazai:1.0.5}
     container_name: xiazai-updater
     restart: unless-stopped
     init: true

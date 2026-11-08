@@ -57,3 +57,17 @@ test('interrupted switching task recovers backup and removes orphan candidate',a
   await docker.stop('old'); await docker.rename('old',updater.job.backupName);
   await updater.recover(); assert.equal((await updater.state()).phase,'rolled_back'); assert.equal(docker.containers.size,1); assert.equal((await docker.inspect('xiazai')).Id,'old');
 });
+
+test('Docker stop timeout restores an original container that actually stopped',async t=>{
+  const {docker,updater}=await fixture(t);const stop=docker.stop.bind(docker);
+  docker.stop=async name=>{await stop(name);throw new Error('response timed out after stopping');};
+  await updater.run(await updater.prepare('1.1.0'));
+  assert.equal((await docker.inspect('xiazai')).Id,'old');assert.equal((await docker.inspect('xiazai')).State.Running,true);
+  assert.equal(docker.containers.size,1);
+});
+
+test('Docker rename timeout restores a backup created before the failed response',async t=>{
+  const {docker,updater}=await fixture(t);const rename=docker.rename.bind(docker);let failed=false;
+  docker.rename=async(name,replacement)=>{await rename(name,replacement);if(!failed&&name==='old'&&replacement.includes('backup')){failed=true;throw new Error('response timed out after rename');}};
+  await updater.run(await updater.prepare('1.1.0'));assert.equal((await docker.inspect('xiazai')).Id,'old');assert.equal((await docker.inspect('xiazai')).State.Running,true);
+});

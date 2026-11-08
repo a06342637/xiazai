@@ -74,7 +74,10 @@ export class Auth {
     const session = this.db.sessions.find(s => s.hash === hashToken(token) && s.expiresAt > this.clock());
     return session ? publicUser(this.db.users.find(u => u.id === session.userId)) : null;
   }
-  logout(token) { return this.mutate(db => { db.sessions = db.sessions.filter(s => s.hash !== hashToken(token || '')); }); }
+  logout(token) {
+    if (!token || !this.db.sessions.some(s => s.hash === hashToken(token))) return Promise.resolve();
+    return this.mutate(db => { db.sessions = db.sessions.filter(s => s.hash !== hashToken(token)); });
+  }
   async changePassword(userId, current, replacement) {
     validatePassword(replacement);
     const user = this.db.users.find(u => u.id === userId);
