@@ -11,7 +11,8 @@ const docker=(...args)=>execFileSync('docker',args,{encoding:'utf8',stdio:['igno
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 try {
   try { docker('image','inspect',image); } catch { docker('pull',image); }
-  docker('run','-d','--name',name,'-p','127.0.0.1::8080','-e','ADMIN_PASSWORD=docker-smoke-password','-e','DATA_DIR=/data','-v',`${root}:/data`,image);
+  const userArgs=process.getuid?['--user',`${process.getuid()}:${process.getgid()}`]:[];
+  docker('run','-d','--name',name,...userArgs,'-p','127.0.0.1::8080','-e','ADMIN_PASSWORD=docker-smoke-password','-e','DATA_DIR=/data','-v',`${root}:/data`,image);
   const ports=JSON.parse(docker('inspect',name))[0].NetworkSettings.Ports['8080/tcp'];
   const base=`http://127.0.0.1:${ports[0].HostPort}`;
   let healthy=false;

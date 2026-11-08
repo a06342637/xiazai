@@ -56,7 +56,9 @@ jobs:
       - name: Verify published Docker image
         env:
           IMAGE: ghcr.io/a06342637/xiazai@${{ steps.image.outputs.digest }}
-        run: node scripts/docker-smoke.mjs "$IMAGE"
+        run: |
+          node scripts/docker-smoke.mjs "$IMAGE"
+          node scripts/docker-updater-smoke.mjs "$IMAGE"
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ github.token }}
