@@ -12,7 +12,8 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 try {
   try { docker('image','inspect',image); } catch { docker('pull',image); }
   const userArgs=process.getuid?['--user',`${process.getuid()}:${process.getgid()}`]:[];
-  docker('run','-d','--name',name,...userArgs,'-p','127.0.0.1::8080','-e','ADMIN_PASSWORD=docker-smoke-password','-e','DATA_DIR=/data','-v',`${root}:/data`,image);
+  execFileSync('docker',['run','--rm','-i',...userArgs,'-e','DATA_DIR=/data','-v',`${root}:/data`,image,'node','scripts/bootstrap-admin.mjs'],{input:JSON.stringify({username:'admin',password:'docker-smoke-password'}),encoding:'utf8'});
+  docker('run','-d','--name',name,...userArgs,'-p','127.0.0.1::8080','-e','DATA_DIR=/data','-v',`${root}:/data`,image);
   const ports=JSON.parse(docker('inspect',name))[0].NetworkSettings.Ports['8080/tcp'];
   const base=`http://127.0.0.1:${ports[0].HostPort}`;
   let healthy=false;
@@ -31,6 +32,13 @@ try {
   for(let attempt=0;attempt<30;attempt++) {try {if((await fetch(base+'/api/health')).ok)break;}catch{} await sleep(1000);}
   assert.equal(await (await fetch(`${base}/api/transfers/${transfer.id}/files/${transfer.files[0].id}`)).text(),'Docker persistence smoke');
   assert.equal((await fetch(base+'/api/history',{headers:{Cookie:cookie}})).status,200);
-  console.log('Docker smoke passed: startup, healthcheck, admin login, upload, persistent files and session after restart.');
+  docker('stop',name);
+  execFileSync('docker',['run','--rm','-i',...userArgs,'-e','DATA_DIR=/data','-v',`${root}:/data`,image,'node','scripts/bootstrap-admin.mjs'],{input:JSON.stringify({username:'admin',password:'reset-smoke-password',reset:true}),encoding:'utf8'});
+  docker('start',name);
+  for(let attempt=0;attempt<30;attempt++) {try {if((await fetch(base+'/api/health')).ok)break;}catch{} await sleep(1000);}
+  assert.equal((await fetch(base+'/api/history',{headers:{Cookie:cookie}})).status,401);
+  const reset=await fetch(base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'admin',password:'reset-smoke-password'})}); assert.equal(reset.status,200);
+  assert.equal(await (await fetch(`${base}/api/transfers/${transfer.id}/files/${transfer.files[0].id}`)).text(),'Docker persistence smoke');
+  console.log('Docker smoke passed: offline admin initialization/reset, startup, healthcheck, upload, persistent files/session and reset invalidation.');
 } catch(error) { try {console.error(docker('logs',name));}catch{} throw error; }
 finally {try {docker('rm','-f',name);}catch{} await rm(root,{recursive:true,force:true});}
