@@ -3,17 +3,20 @@ import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import net from 'node:net';
 
 const image=process.argv[2]; if(!image) throw new Error('Pass Docker image as first argument');
 const root=await mkdtemp(path.join(os.tmpdir(),'xiazai-docker-smoke-'));
 const name=`xiazai-smoke-${Date.now()}`;
 const docker=(...args)=>execFileSync('docker',args,{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const socket=net.createServer(); await new Promise(resolve=>socket.listen(0,'127.0.0.1',resolve));
+const port=socket.address().port; await new Promise(resolve=>socket.close(resolve));
 try {
   try { docker('image','inspect',image); } catch { docker('pull',image); }
   const userArgs=process.getuid?['--user',`${process.getuid()}:${process.getgid()}`]:[];
   execFileSync('docker',['run','--rm','-i',...userArgs,'-e','DATA_DIR=/data','-v',`${root}:/data`,image,'node','scripts/bootstrap-admin.mjs'],{input:JSON.stringify({username:'admin',password:'docker-smoke-password'}),encoding:'utf8'});
-  docker('run','-d','--name',name,...userArgs,'-p','127.0.0.1::8080','-e','DATA_DIR=/data','-v',`${root}:/data`,image);
+  docker('run','-d','--name',name,...userArgs,'-p',`127.0.0.1:${port}:8080`,'-e','DATA_DIR=/data','-v',`${root}:/data`,image);
   const ports=JSON.parse(docker('inspect',name))[0].NetworkSettings.Ports['8080/tcp'];
   const base=`http://127.0.0.1:${ports[0].HostPort}`;
   let healthy=false;
