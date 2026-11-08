@@ -21,7 +21,7 @@ try {
   browser=await chromium.launch({headless:true});
   const context=await browser.newContext({viewport:{width:1366,height:900},permissions:['clipboard-read','clipboard-write']});
   const page=await context.newPage(), errors=[]; page.on('pageerror',error=>errors.push(error.message));
-  await page.goto(base); await page.getByText('单次最大',{exact:false}).waitFor();
+  await page.goto(base); await page.getByText('大小、数量不限',{exact:false}).waitFor();
   await page.screenshot({path:path.join(artifacts,'desktop.png'),fullPage:true});
   await page.getByRole('button',{name:'登录 / 注册'}).click();
   await page.getByRole('button',{name:'注册',exact:true}).click();
@@ -52,10 +52,16 @@ try {
   await page.getByRole('button',{name:'打开设置'}).click(); await page.getByText('系统升级',{exact:false}).waitFor();
   await page.locator('input[name=retentionHours]').fill('72'); await page.getByRole('button',{name:'保存设置'}).click(); await page.getByText('设置已保存',{exact:true}).waitFor();
   assert.equal((await (await context.request.get(base+'/api/config')).json()).retentionHours,72);
+  await page.getByText('磁盘剩余可用',{exact:true}).waitFor();
+  assert.equal(await page.locator('input[name=maxUploadMB]').count(),0);
+  assert.equal(await page.locator('input[name=maxStorageGB]').count(),0);
+  await page.getByRole('button',{name:'刷新磁盘空间'}).click();
+  assert.ok((await page.locator('#disk-available').textContent()).match(/(?:GB|MB|TB)/));
+  await page.locator('#storage-stats').scrollIntoViewIfNeeded();
   await page.screenshot({path:path.join(artifacts,'admin-settings.png'),fullPage:true});
   await page.getByRole('button',{name:'关闭设置',exact:true}).click();
   await page.getByRole('button',{name:'切换深色模式'}).click(); await page.screenshot({path:path.join(artifacts,'dark.png'),fullPage:true});
-  const mobile=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true}); const phone=await mobile.newPage(); await phone.goto(base); await phone.getByText('单次最大',{exact:false}).waitFor();
+  const mobile=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true}); const phone=await mobile.newPage(); await phone.goto(base); await phone.getByText('大小、数量不限',{exact:false}).waitFor();
   assert.ok(await phone.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
   await phone.screenshot({path:path.join(artifacts,'mobile.png'),fullPage:true});
   assert.deepEqual(errors,[]); console.log('Browser smoke passed: registration/login, upload, clipboard, share, image/text/ZIP preview, ownership, settings, theme, mobile layout.');

@@ -1,18 +1,20 @@
-import { mkdir, readdir, rename, rm, stat, statfs } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { atomicJson, readJson, validId, MiB, GiB, httpError } from './util.mjs';
+import { atomicJson, readJson, validId, httpError } from './util.mjs';
+import { DiskGuard } from './disk.mjs';
 
 export const defaults = {
   siteName: '临时下载', retentionHours: 24, cleanupIntervalHours: 24,
-  maxUploadMB: 2048, maxStorageGB: 20, publicUrl: ''
+  publicUrl: ''
 };
 
 export function validateSettings(input, previous = defaults) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw httpError(400, '设置格式错误');
   const result = { ...previous };
+  // Old persisted quotas must not restrict uploads after an online upgrade.
+  delete result.maxUploadMB; delete result.maxStorageGB;
   for (const [key, minimum, maximum] of [
-    ['retentionHours', 1, 8760], ['cleanupIntervalHours', 1, 168],
-    ['maxUploadMB', 1, 102400], ['maxStorageGB', 1, 102400]
+    ['retentionHours', 1, 8760], ['cleanupIntervalHours', 1, 168]
   ]) {
     if (input[key] !== undefined) {
       const value = input[key];
@@ -20,7 +22,6 @@ export function validateSettings(input, previous = defaults) {
       result[key] = value;
     }
   }
-  if (result.maxUploadMB * MiB > result.maxStorageGB * GiB) throw httpError(400, '单次上传上限不能超过存储上限');
   if (input.siteName !== undefined) {
     if (typeof input.siteName !== 'string' || !input.siteName.trim() || input.siteName.trim().length > 30) throw httpError(400, '站点名称需为 1～30 个字符');
     result.siteName = input.siteName.trim();
@@ -39,9 +40,10 @@ export function validateSettings(input, previous = defaults) {
 }
 
 export class Store {
-  constructor(root, clock = Date.now) {
+  constructor(root, clock = Date.now, diskProbe) {
     this.root = path.resolve(root); this.clock = clock; this.transfers = new Map();
-    this.readers = new Map(); this.usedBytes = 0; this.reservedBytes = 0;
+    this.readers = new Map(); this.usedBytes = 0;
+    this.disk = new DiskGuard(this.root, diskProbe);
     this.settingsQueue = Promise.resolve(); this.cleanupQueue = Promise.resolve();
   }
   get uploadsDir() { return path.join(this.root, 'uploads'); }
@@ -82,15 +84,6 @@ export class Store {
       if (remaining) this.readers.set(transfer.id, remaining); else this.readers.delete(transfer.id);
     };
   }
-  reserve(bytes) {
-    if (this.usedBytes + this.reservedBytes + bytes > this.settings.maxStorageGB * GiB) throw httpError(507, '剩余存储空间不足，请联系管理员清理文件或提高存储上限');
-    this.reservedBytes += bytes;
-    return () => { this.reservedBytes -= bytes; };
-  }
-  async checkDisk(bytes) {
-    const disk = await statfs(this.root);
-    if (disk.bavail * disk.bsize < bytes + this.reservedBytes + 64 * MiB) throw httpError(507, '服务器磁盘空间不足');
-  }
   async commit(folder, transfer) {
     await atomicJson(path.join(folder, 'meta.json'), transfer);
     await rename(folder, path.join(this.uploadsDir, transfer.id));
@@ -129,9 +122,9 @@ export class Store {
     });
     this.cleanupQueue = task.catch(() => {}); return task;
   }
-  stats() {
+  async stats() {
     const active = [...this.transfers.values()].filter(t => t.expiresAt > this.clock());
-    return { usedBytes: this.usedBytes, reservedBytes: this.reservedBytes, totalTransfers: this.transfers.size,
+    return { usedBytes: this.usedBytes, disk: await this.disk.info(), totalTransfers: this.transfers.size,
       activeTransfers: active.length, expiredTransfers: this.transfers.size - active.length,
       lastCleanupAt: this.system.lastCleanupAt,
       nextCleanupAt: this.system.lastCleanupAt + this.settings.cleanupIntervalHours * 3600000 };

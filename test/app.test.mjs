@@ -6,15 +6,16 @@ import path from 'node:path';
 import { ZipArchive } from 'archiver';
 import { createApp } from '../server/app.mjs';
 import { validateSettings } from '../server/store.mjs';
-import { validId, GiB } from '../server/util.mjs';
+import { validId } from '../server/util.mjs';
 import { zipEntries } from '../server/preview.mjs';
 import { getRelease, newer } from '../server/releases.mjs';
+import http from 'node:http';
 
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(),'xiazai-test-'));
   let now = 1800000000000;
   const runtime = await createApp({dataDir:root,adminPassword:'isolated-admin-password',clock:() => now,
-    releaseFetcher:async () => ({version:'1.1.0',notes:'A new release',url:'https://github.com/a06342637/xiazai/releases/tag/v1.1.0'})});
+    releaseFetcher:async () => ({version:'1.1.0',notes:'A new release',url:'https://github.com/a06342637/xiazai/releases/tag/v1.1.0'}), ...options});
   const server = runtime.app.listen(0,'127.0.0.1');
   await new Promise(resolve => server.once('listening',resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -98,10 +99,13 @@ test('expiry denies reads before disk cleanup; settings persist and preserve old
   assert.deepEqual(await readdir(f.runtime.store.uploadsDir),[]); assert.equal(cleanup.stats.usedBytes,0);
 });
 
-test('upload limits, empty upload, source protection, storage reservation and safe path handling',async t => {
+test('uploads ignore old quotas and file counts; empty upload, source protection and safe paths remain enforced',async t => {
   const f = await fixture(t), admin = await f.login();
   await f.json('/api/admin/settings',{maxUploadMB:1,maxStorageGB:1},'PUT',admin);
-  assert.equal((await f.upload([['large.bin',Buffer.alloc(1024**2+1)]])).status,413);
+  assert.equal((await f.upload([['large.bin',Buffer.alloc(1024**2+1)]])).status,201);
+  assert.equal((await f.upload(Array.from({length:101},(_,i)=>[`file-${i}.txt`,'ok']))).status,201);
+  const config = await (await f.request('/api/config')).json();
+  assert.equal(config.maxUploadMB,undefined); assert.equal(config.maxFiles,undefined);
   assert.deepEqual(await readdir(f.runtime.store.stagingDir),[]);
   assert.equal((await f.upload([])).status,400);
   assert.equal((await f.upload(undefined,undefined,'?hours=25')).status,400);
@@ -109,10 +113,53 @@ test('upload limits, empty upload, source protection, storage reservation and sa
   assert.equal((await f.request('/api/auth/login',{method:'POST',headers:{Origin:'https://evil.example','Content-Type':'application/json'},body:'{}'})).status,403);
   assert.equal((await f.request('/api/transfers/..%2F..%2Faccounts.json')).status,410);
   assert.equal((await f.request('/accounts.json')).status,404);
-  f.runtime.store.usedBytes=GiB;
-  assert.equal((await f.upload()).status,507); assert.equal(f.runtime.store.reservedBytes,0);
   assert.throws(()=>validateSettings({retentionHours:0})); assert.throws(()=>validateSettings({publicUrl:'javascript:alert(1)'}));
-  assert.throws(()=>validateSettings({publicUrl:'https://user:password@example.com'})); assert.throws(()=>validateSettings({maxUploadMB:2048,maxStorageGB:1}));
+  assert.throws(()=>validateSettings({publicUrl:'https://user:password@example.com'}));
+  const migrated=validateSettings({}, {siteName:'旧站点',retentionHours:6,cleanupIntervalHours:12,publicUrl:'',maxUploadMB:1,maxStorageGB:1});
+  assert.equal(migrated.maxUploadMB,undefined); assert.equal(migrated.maxStorageGB,undefined); assert.equal(migrated.retentionHours,6);
+});
+
+test('disk threshold rejects uploads at exactly 95%, exposes available capacity only to admins, resumes after cleanup',async t => {
+  let available = 500;
+  const f=await fixture(t,{diskProbe:async()=>({bsize:1024**2,blocks:1000,bfree:available,bavail:available})}), admin=await f.login();
+  const stats=await(await f.request('/api/admin/storage',{headers:{Cookie:admin}})).json();
+  assert.equal(stats.stats.disk.totalBytes,1000*1024**2); assert.equal(stats.stats.disk.availableBytes,500*1024**2);
+  assert.equal((await f.request('/api/admin/storage')).status,401);
+  available=50;
+  const denied=await f.upload(); assert.equal(denied.status,507); assert.match((await denied.json()).error,/95%/);
+  assert.deepEqual(await readdir(f.runtime.store.stagingDir),[]); assert.deepEqual(await readdir(f.runtime.store.uploadsDir),[]);
+  const stopped=await(await f.request('/api/admin/storage',{headers:{Cookie:admin}})).json();
+  assert.equal(stopped.stats.disk.usedPercent,95); assert.equal(stopped.stats.disk.uploadAllowed,false);
+  available=500; assert.equal((await f.upload()).status,201);
+});
+
+test('disk filling during streamed upload returns 507 and removes all partially uploaded files',async t => {
+  let calls=0;
+  const f=await fixture(t,{diskProbe:async()=>({bsize:4096,blocks:100000,bfree:++calls>=4?5000:50000,bavail:calls>=4?5000:50000})});
+  const response=await f.upload([['first.txt','small'],['large.bin',Buffer.alloc(3*1024**2)]]);
+  assert.equal(response.status,507); assert.match((await response.json()).error,/95%/);
+  assert.deepEqual(await readdir(f.runtime.store.stagingDir),[]); assert.deepEqual(await readdir(f.runtime.store.uploadsDir),[]);
+  assert.equal(f.runtime.store.usedBytes,0); assert.equal(f.runtime.activeUploads,0);
+});
+
+test('disk protection responds before a still-running client finishes its upload body',async t => {
+  let calls=0;
+  const f=await fixture(t,{diskProbe:async()=>({bsize:4096,blocks:100000,bfree:++calls>=3?5000:50000,bavail:calls>=3?5000:50000})});
+  let finishedSending=false, client;
+  const response = new Promise((resolve,reject)=>{
+    client=http.request(`${f.base}/api/upload`,{method:'POST',headers:{'Content-Type':'multipart/form-data; boundary=streamed-disk-test'}},res=>{
+      let body='';res.on('data',chunk=>body+=chunk);res.on('end',()=>resolve({status:res.statusCode,body}));
+    });
+    client.on('error',error=>{if(error.code!=='EPIPE')reject(error);});
+    client.write('--streamed-disk-test\r\nContent-Disposition: form-data; name="files"; filename="large.bin"\r\nContent-Type: application/octet-stream\r\n\r\n');
+    client.write(Buffer.alloc(256*1024));
+    // Deliberately never send the closing multipart boundary until the server has responded.
+  });
+  try {
+    const result=await Promise.race([response,new Promise((_,reject)=>setTimeout(()=>reject(new Error('disk error waited for client body')),3000))]);
+    assert.equal(result.status,507); assert.match(result.body,/95%/); assert.equal(finishedSending,false);
+    assert.deepEqual(await readdir(f.runtime.store.stagingDir),[]);
+  } finally {finishedSending=true;client.destroy();}
 });
 
 test('ZIP directory, nested entry text preview, extraction and decompression limits',async t => {

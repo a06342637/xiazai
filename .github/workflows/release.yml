@@ -61,6 +61,7 @@ jobs:
           IMAGE: ghcr.io/a06342637/xiazai@${{ steps.image.outputs.digest }}
         run: |
           node scripts/docker-smoke.mjs "$IMAGE"
+          node scripts/docker-disk-smoke.mjs "$IMAGE"
           node scripts/docker-updater-smoke.mjs "$IMAGE"
       - name: Publish complete release
         env:

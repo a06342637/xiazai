@@ -14,8 +14,8 @@ import { previewType, isText, textPreview, zipEntries, readZipEntry } from './pr
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 
-export async function createApp({ dataDir, adminUsername = 'admin', adminPassword, publicUrl = '', updateKey, updaterUrl, clock = Date.now, releaseFetcher = getRelease } = {}) {
-  const store = new Store(dataDir, clock); await store.init();
+export async function createApp({ dataDir, adminUsername = 'admin', adminPassword, publicUrl = '', updateKey, updaterUrl, clock = Date.now, releaseFetcher = getRelease, diskProbe } = {}) {
+  const store = new Store(dataDir, clock, diskProbe); await store.init();
   const auth = new Auth(store.root, clock); await auth.init(adminUsername, adminPassword);
   const app = express(); app.disable('x-powered-by');
   let activeUploads = 0, closing = false, maintenance = false;
@@ -88,25 +88,22 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
   });
   app.get('/api/health', (req, res) => res.json({ ok: !closing, version: pkg.version }));
   app.get('/api/config', (req, res) => res.json({ version: pkg.version, siteName: store.settings.siteName,
-    retentionHours: store.settings.retentionHours, maxUploadMB: store.settings.maxUploadMB,
-    publicUrl: publicUrl || store.settings.publicUrl, maxFiles: 100 }));
+    retentionHours: store.settings.retentionHours, diskStopPercent: 95,
+    publicUrl: publicUrl || store.settings.publicUrl }));
   app.post('/api/upload', async (req, res) => {
     const state = await updateState();
     if (closing || maintenance || !terminal.has(state.phase)) throw httpError(503, '系统正在更新，请稍后上传');
     if (activeUploads >= 5) throw httpError(429, '当前上传人数较多，请稍后重试');
     const hours = req.query.hours === undefined ? store.settings.retentionHours : Number(req.query.hours);
     if (!Number.isInteger(hours) || hours < 1 || hours > store.settings.retentionHours) throw httpError(400, '保留时间超出允许范围');
-    const maxBytes = store.settings.maxUploadMB * MiB;
     const transferId = id(), folder = path.join(store.stagingDir, transferId);
     activeUploads++;
-    let release;
     try {
-      // Reserve synchronously before any await so concurrent requests cannot oversubscribe.
-      release = store.reserve(maxBytes);
-      await store.checkDisk(0);
+      await store.disk.check();
       await mkdir(folder);
-      const files = await parseUpload(req, res, folder, maxBytes);
+      const files = await parseUpload(req, res, folder, store.disk);
       if (req.aborted || res.destroyed) throw httpError(400, '上传已取消');
+      await store.disk.check();
       const createdAt = clock();
       const transfer = { id: transferId, ownerId: req.user?.id || null, files, totalSize: files.reduce((n, f) => n + f.size, 0),
         createdAt, expiresAt: createdAt + hours * 3600000 };
@@ -114,7 +111,7 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
       const { ownerId, ...shared } = transfer;
       res.status(201).json({ ...shared, sharePath: `/s/${transferId}` });
     } finally {
-      activeUploads--; release?.();
+      activeUploads--;
       await rm(folder, { recursive: true, force: true });
     }
   });
@@ -196,10 +193,11 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     }
     await archive.finalize();
   });
-  app.get('/api/admin/settings', async (req, res) => res.json({ settings: store.settings, stats: store.stats(),
+  app.get('/api/admin/settings', async (req, res) => res.json({ settings: store.settings, stats: await store.stats(),
     version: pkg.version, updateEnabled: Boolean(updaterUrl && updateKey), update: await updateState() }));
-  app.put('/api/admin/settings', async (req, res) => res.json({ settings: await store.saveSettings(req.body), stats: store.stats() }));
-  app.post('/api/admin/cleanup', async (req, res) => res.json({ ...await store.cleanup(), stats: store.stats() }));
+  app.put('/api/admin/settings', async (req, res) => res.json({ settings: await store.saveSettings(req.body), stats: await store.stats() }));
+  app.post('/api/admin/cleanup', async (req, res) => res.json({ ...await store.cleanup(), stats: await store.stats() }));
+  app.get('/api/admin/storage', async (req, res) => res.json({ stats: await store.stats() }));
   app.get('/api/admin/update', async (req, res) => res.json(await updateState()));
   app.get('/api/admin/version', async (req, res) => {
     const release = await releaseFetcher();
