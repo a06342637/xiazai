@@ -9,7 +9,7 @@ import { Store } from './store.mjs';
 import { parseUpload } from './upload.mjs';
 import { getRelease, newer } from './releases.mjs';
 import { Auth, publicUser } from './auth.mjs';
-import { previewType, isText, textPreview, zipEntries, readZipEntry } from './preview.mjs';
+import { previewType, isText, textPreview, zipEntries, readZipEntry, unlockZip } from './preview.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
@@ -25,7 +25,7 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
   app.use((req, res, next) => {
     res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'X-Frame-Options': 'DENY', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" });
+      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" });
     if (req.path.startsWith('/api/')) res.set('Cache-Control', 'no-store');
     next();
   });
@@ -94,8 +94,9 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     const state = await updateState();
     if (closing || maintenance || !terminal.has(state.phase)) throw httpError(503, '系统正在更新，请稍后上传');
     if (activeUploads >= 5) throw httpError(429, '当前上传人数较多，请稍后重试');
+    const permanent = req.query.hours === 'permanent';
     const hours = req.query.hours === undefined ? store.settings.retentionHours : Number(req.query.hours);
-    if (!Number.isInteger(hours) || hours < 1 || hours > store.settings.retentionHours) throw httpError(400, '保留时间超出允许范围');
+    if (!permanent && (!Number.isInteger(hours) || hours < 1 || hours > store.settings.retentionHours)) throw httpError(400, '保留时间超出允许范围');
     const transferId = id(), folder = path.join(store.stagingDir, transferId);
     activeUploads++;
     try {
@@ -106,7 +107,8 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
       await store.disk.check();
       const createdAt = clock();
       const transfer = { id: transferId, ownerId: req.user?.id || null, files, totalSize: files.reduce((n, f) => n + f.size, 0),
-        createdAt, expiresAt: createdAt + hours * 3600000 };
+        // A far-future timestamp preserves files even if an older version is restored.
+        createdAt, permanent, expiresAt: permanent ? 8640000000000000 : createdAt + hours * 3600000 };
       await store.commit(folder, transfer);
       const { ownerId, ...shared } = transfer;
       res.status(201).json({ ...shared, sharePath: `/s/${transferId}` });
@@ -138,6 +140,12 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     res.sendFile(filename, error => { release(); if (error && !res.headersSent) next(error); else if (error) res.destroy(); });
   });
   let zipReaders = 0;
+  const zipAccess = new Map(), zipAttempts = new Map();
+  const zipPassword = (req, file) => {
+    const token = req.headers.authorization?.replace(/^ZIP /, '');
+    const access = token && zipAccess.get(token);
+    return access && access.fileId === file.id && access.transferId === req.params.id && access.expiresAt > clock() ? access.password : undefined;
+  };
   const zipLimit = (req, res, next) => {
     if (zipReaders >= 2) return next(httpError(429, '当前解压任务较多，请稍后再试'));
     zipReaders++; let released = false;
@@ -148,14 +156,36 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     const { transfer, file, filename } = previewFile(req);
     if (!file.name.toLowerCase().endsWith('.zip')) throw httpError(415, '只支持 ZIP 压缩包');
     const release = store.acquire(transfer);
-    try { res.json({ entries: await zipEntries(filename) }); } finally { release(); }
+    try {
+      const entries = await zipEntries(filename);
+      if (entries.some(e => e.encrypted) && !zipPassword(req, file)) throw httpError(423, '此 ZIP 已加密，请输入解压密码');
+      res.json({ entries });
+    } finally { release(); }
+  });
+  app.post('/api/transfers/:id/files/:fileId/unlock', zipLimit, async (req, res) => {
+    const { transfer, file, filename } = previewFile(req);
+    if (!file.name.toLowerCase().endsWith('.zip')) throw httpError(415, '只支持 ZIP 压缩包');
+    const key = `${req.socket.remoteAddress}:${file.id}`, now = clock();
+    for (const [token, access] of zipAccess) if (access.expiresAt <= now) zipAccess.delete(token);
+    for (const [key, attempt] of zipAttempts) if (attempt.until <= now) zipAttempts.delete(key);
+    const attempt = zipAttempts.get(key) || { count: 0, until: now + 600000 };
+    if (attempt.count >= 20 || zipAttempts.size >= 10000 || zipAccess.size >= 2000) throw httpError(429, '解压密码尝试过于频繁，请稍后重试');
+    attempt.count++; zipAttempts.set(key, attempt);
+    const release = store.acquire(transfer);
+    try {
+      const entries = await unlockZip(filename, req.body?.password);
+      const token = id(), expiresAt = Math.min(now + 30 * 60000, transfer.expiresAt ?? Infinity);
+      zipAccess.set(token, { password: req.body.password, fileId: file.id, transferId: transfer.id, expiresAt });
+      zipAttempts.delete(key);
+      res.json({ entries, token, expiresAt });
+    } finally { release(); }
   });
   app.get('/api/transfers/:id/files/:fileId/entries/:index', zipLimit, async (req, res) => {
     const { transfer, file, filename } = previewFile(req);
     if (!file.name.toLowerCase().endsWith('.zip')) throw httpError(415, '只支持 ZIP 压缩包');
     const release = store.acquire(transfer);
     try {
-      const entry = await readZipEntry(filename, Number(req.params.index));
+      const entry = await readZipEntry(filename, Number(req.params.index), zipPassword(req, file));
       if (req.query.preview === '1') {
         if (isText(entry.name)) {
           if (entry.data.length > 2 * MiB) throw httpError(413, '文本超过 2 MB，请下载查看');

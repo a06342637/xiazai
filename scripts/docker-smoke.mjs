@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import { encryptedZip } from './zip-fixture.mjs';
 
 const image=process.argv[2]; if(!image) throw new Error('Pass Docker image as first argument');
 const root=await mkdtemp(path.join(os.tmpdir(),'xiazai-docker-smoke-'));
@@ -31,6 +32,15 @@ try {
   const cookie=login.headers.get('set-cookie').split(';')[0];
   const body=new FormData(); body.append('files',new Blob(['Docker persistence smoke']),'docker.txt');
   const response=await fetch(base+'/api/upload',{method:'POST',body,headers:{Cookie:cookie}}); assert.equal(response.status,201); const transfer=await response.json();
+  for (const zipCrypto of [true,false]) {
+    const archive = new FormData(); archive.append('files',new Blob([await encryptedZip([['secret.txt','Docker encrypted ZIP preview']],'docker-secret',zipCrypto)]),'encrypted.zip');
+    const shared = await(await fetch(base+'/api/upload?hours=permanent',{method:'POST',body:archive,headers:{Cookie:cookie}})).json(); assert.equal(shared.permanent,true);
+    const url = `${base}/api/transfers/${shared.id}/files/${shared.files[0].id}`;
+    assert.equal((await fetch(url+'/entries')).status,423);
+    const bad = await fetch(url+'/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:'wrong'})});assert.equal(bad.status,422);
+    const unlocked = await fetch(url+'/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:'docker-secret'})});assert.equal(unlocked.status,200);
+    const access = await unlocked.json();assert.equal(await(await fetch(url+'/entries/0',{headers:{Authorization:`ZIP ${access.token}`}})).text(),'Docker encrypted ZIP preview');
+  }
   docker('restart',name);
   for(let attempt=0;attempt<30;attempt++) {try {if((await fetch(base+'/api/health')).ok)break;}catch{} await sleep(1000);}
   assert.equal(await (await fetch(`${base}/api/transfers/${transfer.id}/files/${transfer.files[0].id}`)).text(),'Docker persistence smoke');

@@ -7,6 +7,7 @@ export const defaults = {
   siteName: '临时下载', retentionHours: 24, cleanupIntervalHours: 24,
   publicUrl: ''
 };
+export const isActive = (transfer, now) => transfer.permanent === true || transfer.expiresAt === null || transfer.expiresAt > now;
 
 export function validateSettings(input, previous = defaults) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw httpError(400, '设置格式错误');
@@ -69,7 +70,7 @@ export class Store {
   get(id) {
     if (!validId(id)) return null;
     const transfer = this.transfers.get(id);
-    return transfer && transfer.expiresAt > this.clock() ? transfer : null;
+    return transfer && isActive(transfer, this.clock()) ? transfer : null;
   }
   filePath(transferId, fileId) {
     if (!validId(transferId) || !validId(fileId)) throw httpError(404, '文件不存在');
@@ -101,7 +102,7 @@ export class Store {
     const task = this.cleanupQueue.then(async () => {
       let deletedTransfers = 0, deletedBytes = 0;
       for (const [key, transfer] of this.transfers) {
-        if (transfer.expiresAt > this.clock() || this.readers.has(key)) continue;
+        if (isActive(transfer, this.clock()) || this.readers.has(key)) continue;
         await rm(path.join(this.uploadsDir, key), { recursive: true, force: true });
         this.transfers.delete(key); this.usedBytes -= transfer.totalSize;
         deletedTransfers++; deletedBytes += transfer.totalSize;
@@ -123,7 +124,7 @@ export class Store {
     this.cleanupQueue = task.catch(() => {}); return task;
   }
   async stats() {
-    const active = [...this.transfers.values()].filter(t => t.expiresAt > this.clock());
+    const active = [...this.transfers.values()].filter(t => isActive(t, this.clock()));
     return { usedBytes: this.usedBytes, disk: await this.disk.info(), totalTransfers: this.transfers.size,
       activeTransfers: active.length, expiredTransfers: this.transfers.size - active.length,
       lastCleanupAt: this.system.lastCleanupAt,

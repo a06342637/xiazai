@@ -10,6 +10,7 @@ import { validId } from '../server/util.mjs';
 import { zipEntries } from '../server/preview.mjs';
 import { getRelease, newer } from '../server/releases.mjs';
 import http from 'node:http';
+import { encryptedZip } from '../scripts/zip-fixture.mjs';
 
 async function fixture(t, options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(),'xiazai-test-'));
@@ -171,6 +172,39 @@ test('ZIP directory, nested entry text preview, extraction and decompression lim
   assert.equal((await f.request(`${base}/entries/-1`)).status,400);
   const bad = await (await f.upload([['bad.zip','not a zip']])).json();
   assert.equal((await f.request(`/api/transfers/${bad.id}/files/${bad.files[0].id}/entries`)).status,400);
+});
+
+test('AES and ZipCrypto archives prompt for password, reject wrong password, and scope unlock tokens to archive and expiry',async t => {
+  const f = await fixture(t);
+  for (const zipCrypto of [true,false]) {
+    const zip = await encryptedZip([['docs/秘密.txt','encrypted content'],['photo.png',Buffer.from([1,2,3])]], 'secret123', zipCrypto);
+    const transfer = await(await f.upload([['encrypted.zip',zip]])).json(), base = `/api/transfers/${transfer.id}/files/${transfer.files[0].id}`;
+    assert.equal((await f.request(`${base}/entries`)).status,423);
+    assert.equal((await f.request(`${base}/entries/0`)).status,423);
+    assert.equal((await f.json(`${base}/unlock`,{password:'wrong'})).status,422);
+    assert.equal((await f.json(`${base}/unlock`,{password:''})).status,400);
+    const unlocked = await f.json(`${base}/unlock`,{password:'secret123'});assert.equal(unlocked.status,200);
+    const access = await unlocked.json();assert.ok(validId(access.token));assert.equal(access.password,undefined);assert.equal(access.entries[0].name,'docs/秘密.txt');
+    const headers = {Authorization:`ZIP ${access.token}`};
+    assert.equal((await f.request(`${base}/entries`,{headers})).status,200);
+    assert.equal(await(await f.request(`${base}/entries/0`,{headers})).text(),'encrypted content');
+    assert.equal((await(await f.request(`${base}/entries/0?preview=1`,{headers})).json()).text,'encrypted content');
+    const photo = await f.request(`${base}/entries/1?preview=1`,{headers});assert.equal(photo.headers.get('content-type'),'image/png');assert.deepEqual(Buffer.from(await photo.arrayBuffer()),Buffer.from([1,2,3]));
+    const other = await(await f.upload([['other.zip',zip]])).json();
+    assert.equal((await f.request(`/api/transfers/${other.id}/files/${other.files[0].id}/entries/0`,{headers})).status,423);
+    f.advance(30*60000+1);assert.equal((await f.request(`${base}/entries/0`,{headers})).status,423);
+  }
+});
+
+test('permanent transfers survive cleanup and restart and support direct attachment downloads',async t => {
+  const f = await fixture(t), admin = await f.login();
+  const transfer = await(await f.upload([['keep.txt','permanent file']],admin,'?hours=permanent')).json();
+  assert.equal(transfer.permanent,true);assert.equal(transfer.expiresAt,8640000000000000);
+  f.advance(5*365*86400000);assert.ok(f.runtime.store.get(transfer.id));
+  const cleaned=await f.runtime.store.cleanup();assert.equal(cleaned.deletedTransfers,0);
+  const { Store } = await import('../server/store.mjs');const restored = new Store(f.root,()=>Date.now()+10*365*86400000);await restored.init();assert.ok(restored.get(transfer.id));
+  const download=await f.request(`/api/transfers/${transfer.id}/files/${transfer.files[0].id}`);assert.equal(download.status,200);assert.match(download.headers.get('content-disposition'),/^attachment/);assert.equal(await download.text(),'permanent file');
+  await restored.deleteTransfer(transfer.id);assert.equal(restored.get(transfer.id),null);
 });
 
 test('release manifests accept only official immutable digests',async () => {

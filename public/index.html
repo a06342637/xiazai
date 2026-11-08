@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
-<body>
+<body data-view="upload">
   <header class="header">
     <a class="brand" href="/" aria-label="临时下载首页"><span class="brand-icon" data-icon="send"></span><span class="site-name">临时下载</span><span class="brand-divider"></span><span class="brand-caption">文件，轻松抵达</span></a>
     <nav class="nav-actions" aria-label="主导航">
@@ -47,6 +47,7 @@
         <div class="share-link"><input id="share-url" readonly aria-label="文件分享链接"><button class="primary-button" id="copy-link"><span data-icon="copy"></span><span id="copy-label">复制链接</span></button></div>
         <div class="result-meta"><span data-icon="clock"></span><span id="result-expiry"></span></div>
         <div class="result-actions"><a id="open-share" class="secondary-button" target="_blank" rel="noopener">查看文件<span data-icon="arrow"></span></a><button id="send-more" class="secondary-button">继续发送<span data-icon="plus"></span></button></div>
+        <div class="file-list result-file-list" id="result-file-list"></div>
       </div>
       <div class="upload-options" id="upload-options"><div class="option-label"><span data-icon="clock"></span><span>文件保留</span></div><div class="expiry-options" id="expiry-options"></div><span class="option-note">到期自动失效</span></div>
       <div class="panel-footnote"><span data-icon="lock"></span><span id="panel-note">上传完成后自动生成链接，并复制到剪贴板</span></div>
@@ -60,7 +61,7 @@
     </section>
     <div class="quiet-note" id="quiet-note">少一点繁琐，多一点自由。<span class="note-line"></span>让分享回归简单。</div>
   </main>
-  <footer><span><a href="https://github.com/a06342637/xiazai" target="_blank" rel="noopener"><span class="footer-brand">XIAZAI</span></a><span class="version" id="footer-version">v1.0.3</span></span><span class="footer-right"><span class="status-dot"></span>由你托管，为你而用</span></footer>
+  <footer><span><a href="https://github.com/a06342637/xiazai" target="_blank" rel="noopener"><span class="footer-brand">XIAZAI</span></a><span class="version" id="footer-version">v1.0.4</span></span><span class="footer-right"><span class="status-dot"></span>由你托管，为你而用</span></footer>
   <dialog id="auth-dialog" class="modal auth-modal" aria-labelledby="auth-title">
     <button class="close-button" data-close="auth-dialog" aria-label="关闭登录窗口"><span data-icon="close"></span></button>
     <div class="modal-mark" data-icon="user"></div><h2 id="auth-title">欢迎回来</h2><p class="modal-description" id="auth-description">登录，管理你分享过的文件。</p>

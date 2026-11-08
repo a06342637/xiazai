@@ -6,6 +6,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import { ZipArchive } from 'archiver';
 import { createApp } from '../server/app.mjs';
+import { encryptedZip } from './zip-fixture.mjs';
 
 const root=await mkdtemp(path.join(os.tmpdir(),'xiazai-browser-smoke-'));
 const artifacts=path.resolve('.verification'); await mkdir(artifacts,{recursive:true});
@@ -14,24 +15,39 @@ const server=runtime.app.listen(0,'127.0.0.1'); await new Promise(resolve=>serve
 const base=`http://127.0.0.1:${server.address().port}`;
 let browser;
 try {
-  const textFile=path.join(root,'你好.txt'), pngFile=path.join(root,'preview.png'), zipFile=path.join(root,'sample.zip');
+  const textFile=path.join(root,'你好.txt'), pngFile=path.join(root,'preview.png'), zipFile=path.join(root,'sample.zip'), encryptedFile=path.join(root,'encrypted.zip');
   await writeFile(textFile,'Browser smoke file\n<script>must be text only</script>');
   await writeFile(pngFile,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jYV8AAAAASUVORK5CYII=','base64'));
+  await writeFile(encryptedFile,await encryptedZip([['secret.txt','Encrypted browser smoke'],['picture.png',await (await import('node:fs/promises')).readFile(pngFile)]],'browser-secret'));
   const archive=new ZipArchive({zlib:{level:0}}), stream=createWriteStream(zipFile); archive.pipe(stream); archive.append('ZIP preview smoke',{name:'docs/readme.txt'}); await archive.finalize(); await new Promise(resolve=>stream.on('close',resolve));
   browser=await chromium.launch({headless:true});
   const context=await browser.newContext({viewport:{width:1366,height:900},permissions:['clipboard-read','clipboard-write']});
   const page=await context.newPage(), errors=[]; page.on('pageerror',error=>errors.push(error.message));
   await page.goto(base); await page.getByText('大小、数量不限',{exact:false}).waitFor();
+  assert.equal(await page.locator('.expiry-button.active').innerText(),'1 天');
+  for (const size of [{width:1366,height:768},{width:1600,height:720},{width:1280,height:600},{width:1920,height:1080}]) {
+    await page.setViewportSize(size);assert.ok(await page.evaluate(()=>document.documentElement.scrollHeight<=innerHeight),`Homepage must fit ${size.width}x${size.height}: ${await page.evaluate(()=>[...document.querySelectorAll(".header,.hero,.upload-panel,.dropzone,.features,.quiet-note,footer")].map(el=>({class:el.className,height:el.getBoundingClientRect().height,top:el.getBoundingClientRect().top}))).then(JSON.stringify)}`);
+    assert.ok(await page.locator('footer').evaluate(el=>el.getBoundingClientRect().bottom<=innerHeight));
+  }
+  await page.setViewportSize({width:1366,height:768});
   await page.screenshot({path:path.join(artifacts,'desktop.png'),fullPage:true});
   await page.getByRole('button',{name:'登录 / 注册'}).click();
   await page.getByRole('button',{name:'注册',exact:true}).click();
   await page.getByLabel('用户名',{exact:true}).fill('smokeuser'); await page.getByLabel('密码',{exact:true}).fill('smoke-guest-password');
   await page.getByRole('button',{name:'注册并登录'}).click(); await page.getByRole('button',{name:'smokeuser'}).waitFor();
-  await page.locator('#file-input').setInputFiles([textFile,pngFile,zipFile]);
+  await page.getByRole('button',{name:'永久',exact:true}).click();
+  await page.locator('#file-input').setInputFiles([textFile,pngFile,zipFile,encryptedFile]);
   await page.getByText('文件准备好了',{exact:true}).waitFor();
   const url=await page.getByLabel('文件分享链接').inputValue(); assert.ok(url.startsWith(base+'/s/'));
   assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),url);
-  const shared=await context.newPage(); await shared.goto(url); await shared.getByRole('heading',{name:'你收到 3 个文件'}).waitFor();
+  await page.getByText('永久保留，分享链接持续有效').waitFor();assert.equal(await page.locator('#result-file-list .file-item').count(),4);
+  const shared=await context.newPage(); await shared.goto(url); await shared.getByRole('heading',{name:'你收到 4 个文件'}).waitFor();
+  await shared.getByText('永久保留',{exact:true}).waitFor();
+  await shared.getByRole('button',{name:'复制 你好.txt 下载直链'}).click();
+  const direct=await shared.evaluate(()=>navigator.clipboard.readText());assert.ok(direct.includes('/api/transfers/')&&!direct.includes('/s/'));
+  const downloaded=await context.request.get(direct);assert.equal(await downloaded.text(),'Browser smoke file\n<script>must be text only</script>');assert.match(downloaded.headers()['content-disposition'],/attachment/);
+  await shared.getByRole('button',{name:'展开 preview.png'}).click();await shared.locator('.inline-preview img').waitFor();await shared.getByRole('button',{name:'展开 preview.png'}).click();
+  await shared.screenshot({path:path.join(artifacts,'file-list.png'),fullPage:true});
   await shared.getByRole('button',{name:'预览 你好.txt',exact:true}).click(); await shared.getByText('Browser smoke file',{exact:false}).waitFor();
   assert.equal(await shared.locator('#preview-content script').count(),0);
   await shared.getByRole('button',{name:'关闭预览'}).click();
@@ -41,6 +57,17 @@ try {
   await shared.getByRole('button',{name:'预览 sample.zip',exact:true}).click(); await shared.getByText('docs/readme.txt',{exact:true}).waitFor();
   await shared.getByRole('button',{name:'预览 docs/readme.txt'}).click(); await shared.getByText('ZIP preview smoke',{exact:true}).waitFor();
   await shared.screenshot({path:path.join(artifacts,'zip-preview.png'),fullPage:true});
+  await shared.getByRole('button',{name:'关闭预览'}).click();
+  await shared.getByRole('button',{name:'预览 encrypted.zip',exact:true}).click();await shared.getByLabel('解压密码',{exact:true}).waitFor();
+  await shared.getByLabel('解压密码',{exact:true}).fill('wrong');await shared.getByRole('button',{name:'解锁并查看'}).click();await shared.getByText('解压密码不正确或加密文件已损坏，请重新输入',{exact:true}).waitFor();
+  await shared.getByLabel('解压密码',{exact:true}).fill('browser-secret');await shared.getByRole('button',{name:'解锁并查看'}).click();await shared.getByText('secret.txt',{exact:true}).waitFor();
+  await shared.getByRole('button',{name:'预览 secret.txt'}).click();await shared.getByText('Encrypted browser smoke',{exact:true}).waitFor();
+  await shared.getByRole('button',{name:'← 返回压缩包目录'}).click();
+  const decryptedDownload = shared.waitForEvent('download'); await shared.getByRole('button',{name:'下载 secret.txt',exact:true}).click();
+  const saved = await decryptedDownload;assert.equal(await(await import('node:fs/promises')).readFile(await saved.path(),'utf8'),'Encrypted browser smoke');
+  await shared.getByRole('button',{name:'预览 picture.png'}).click();await shared.locator('#preview-content img').waitFor();
+  await shared.waitForFunction(()=>document.querySelector('#preview-content img')?.naturalWidth>0);
+  await shared.screenshot({path:path.join(artifacts,'encrypted-zip.png'),fullPage:true});
   await page.getByRole('button',{name:'我的文件',exact:true}).click(); await page.getByRole('heading',{name:'我的文件'}).waitFor();
   await page.getByRole('button',{name:'打开设置'}).click(); await page.getByText('你已登录普通账号。',{exact:false}).waitFor();
   await page.getByRole('button',{name:'关闭设置',exact:true}).click();
