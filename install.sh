@@ -33,7 +33,10 @@ mkdir -p "$DEPLOY"
 chmod 700 "$ROOT" "$DEPLOY"
 
 echo "正在获取最新正式版本…"
-curl -fsSL --retry 3 "https://github.com/$REPO/releases/latest/download/release.json" -o "$TMP/release.json"
+# Resolve latest through the official API; some networks time out on GitHub's latest redirect.
+curl -fsSL --retry 3 "https://api.github.com/repos/$REPO/releases/latest" -o "$TMP/latest.json"
+LATEST_VERSION="$(docker run --rm -i node:24-alpine node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{const r=JSON.parse(s);if(r.draft||r.prerelease||!/^v\d+\.\d+\.\d+$/.test(r.tag_name))process.exit(1);console.log(r.tag_name)})' < "$TMP/latest.json")"
+curl -fsSL --retry 3 "https://github.com/$REPO/releases/download/$LATEST_VERSION/release.json" -o "$TMP/release.json"
 # Parse manifest in a tiny Node container; no host Node/Python dependencies are needed.
 PARSED="$(docker run --rm -i node:24-alpine node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{const m=JSON.parse(s);if(m.schema!==1||!/^\d+\.\d+\.\d+$/.test(m.version)||!/^ghcr\.io\/a06342637\/xiazai@sha256:[a-f0-9]{64}$/.test(m.image))process.exit(1);console.log(m.version);console.log(m.image)})' < "$TMP/release.json")"
 VERSION="$(printf '%s\n' "$PARSED" | head -n 1)"
