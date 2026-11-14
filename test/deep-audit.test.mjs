@@ -118,5 +118,5 @@ test('many multipart files do not leave open handles or change requested file or
   const f=await app(t), form=new FormData();for(let n=0;n<250;n++)form.append('files',new Blob(['x']),`order-${n}.txt`);
   const response=await fetch(f.base+'/api/upload',{method:'POST',body:form});assert.equal(response.status,201);const transfer=await response.json();
   for(let n=0;n<50&&f.runtime.activeUploads;n++)await new Promise(r=>setTimeout(r,10));
-  assert.equal(transfer.files.length,250);assert.equal(transfer.files[249].name,'order-249.txt');assert.equal(f.runtime.activeUploads,0);assert.equal(f.runtime.store.disk.uploads.size,0);
+  assert.equal(transfer.files.length,250);assert.equal(transfer.files[249].originalName,'order-249.txt');assert.match(transfer.files[249].name,/_txt250\.txt$/);assert.equal(f.runtime.activeUploads,0);assert.equal(f.runtime.store.disk.uploads.size,0);
 });

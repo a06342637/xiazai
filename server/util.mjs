@@ -36,4 +36,17 @@ export function safeName(name) {
   return !filename || filename === '.' || filename === '..' ? 'unnamed' : filename;
 }
 
+export function datedFiles(files, timestamp) {
+  const parts = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(timestamp));
+  const value = key => parts.find(p=>p.type===key).value;
+  const date = `${value('year')}-${value('month')}-${value('day')}`, counts = new Map();
+  return files.map(file => {
+    const originalName = file.name, ext = path.extname(originalName).toLowerCase();
+    const validExtension = /^\.[a-z0-9]{1,16}$/.test(ext) ? ext : '';
+    const type = validExtension.slice(1) || 'file', number = (counts.get(type) || 0) + 1;
+    counts.set(type, number);
+    return {...file, originalName, name:`${date}_${type}${/\d$/.test(type)?'_':''}${number}${validExtension}`};
+  });
+}
+
 export function httpError(status, message) { return Object.assign(new Error(message), { status }); }

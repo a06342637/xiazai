@@ -3,7 +3,7 @@ import { ZipArchive } from 'archiver';
 import { mkdir, rm, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { id, readJson, MiB, terminal, httpError } from './util.mjs';
+import { id, readJson, MiB, terminal, httpError, datedFiles } from './util.mjs';
 import { Store } from './store.mjs';
 import { parseUpload } from './upload.mjs';
 import { getRelease, newer } from './releases.mjs';
@@ -113,10 +113,11 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     try {
       await store.disk.check();
       await mkdir(folder);
-      const files = await parseUpload(req, res, folder, store.disk);
+      const uploaded = await parseUpload(req, res, folder, store.disk);
       if (req.aborted || res.destroyed) throw httpError(400, '上传已取消');
       await store.disk.check();
       const createdAt = clock();
+      const files = datedFiles(uploaded, createdAt);
       const transfer = { id: transferId, ownerId: req.user?.id || null, files, totalSize: files.reduce((n, f) => n + f.size, 0),
         // A far-future timestamp preserves files even if an older version is restored.
         createdAt, permanent, expiresAt: permanent ? 8640000000000000 : createdAt + hours * 3600000 };

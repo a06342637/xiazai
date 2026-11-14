@@ -38,6 +38,8 @@ const activeTransfer = transfer => permanentTransfer(transfer) || transfer.expir
 let config = null, user = null, expiryHours = 24, request = null, toastTimer, authMode = 'login', authNext = null, page = 1, updatePoll = null, pendingDelete;
 let currentZip = null, storagePoll = null, previewRevision = 0, viewRevision = 0, storageRefreshing = false, settingsRevision = 0;
 let currentGallery = null, galleryLayout = null;
+let mediaLoad = null;
+function cancelMediaLoad() {mediaLoad?.abort();mediaLoad=null;}
 const fileLists = new Map();
 const previewUrls = new Set();
 function clearPreviewMedia() { for (const url of previewUrls) URL.revokeObjectURL(url); previewUrls.clear(); }
@@ -54,7 +56,7 @@ function syncModals() {
   document.documentElement.classList.toggle('modal-open', opened); document.body.classList.toggle('modal-open', opened); $('#modal-shade').hidden = !opened;
 }
 function showDialog(name) { const dialog = $(`#${name}`); if (!dialog.open) dialog.showModal(); syncModals(); }
-function clearPreview() { previewRevision++; clearPreviewMedia(); galleryLayout = null; currentGallery = null; $('#preview-content').replaceChildren(); currentZip = null; }
+function clearPreview() { previewRevision++; cancelMediaLoad(); clearPreviewMedia(); galleryLayout = null; currentGallery = null; $('#preview-content').replaceChildren(); currentZip = null; }
 function closeDialog(name) { if(name === 'preview-dialog')clearPreview(); $(`#${name}`).close(); syncModals(); }
 function updateUser(next) { user = next; $('#account-label').textContent = user ? user.username : '登录 / 注册'; $('#panel-note').textContent = user ? '上传完成后自动复制链接，并保存到我的文件' : '上传完成后自动生成链接，并复制到剪贴板'; }
 function applyConfig(next) {
@@ -220,11 +222,12 @@ function mountViewer(media, gallery) {
   const status = document.createElement('span'); status.className = 'media-zoom'; status.setAttribute('aria-live','polite');
   const layout = () => {
     if (!stage.isConnected) return;
-    const width = media.naturalWidth || media.videoWidth || 640, height = media.naturalHeight || media.videoHeight || 360;
+    const width = media.naturalWidth || media.videoWidth, height = media.naturalHeight || media.videoHeight;
+    if(!width || !height)return;
     const rotated = angle % 180 !== 0;
     const scale = Math.min((stage.clientWidth - 24) / (rotated ? height : width), (stage.clientHeight - 24) / (rotated ? width : height), 1) * zoom;
-    surface.style.width = `${Math.max(stage.clientWidth, (rotated ? height : width) * scale + 24)}px`;
-    surface.style.height = `${Math.max(stage.clientHeight, (rotated ? width : height) * scale + 24)}px`;
+    surface.style.width = zoom <= 1 ? '100%' : `${Math.ceil(Math.max(stage.clientWidth, (rotated ? height : width) * scale + 24))}px`;
+    surface.style.height = zoom <= 1 ? '100%' : `${Math.ceil(Math.max(stage.clientHeight, (rotated ? width : height) * scale + 24))}px`;
     media.style.width = `${width * scale}px`; media.style.height = `${height * scale}px`; media.style.transform = `translate(-50%, -50%) rotate(${angle}deg)`;
     stage.scrollLeft = (surface.offsetWidth - stage.clientWidth) / 2; stage.scrollTop = (surface.offsetHeight - stage.clientHeight) / 2;
     status.textContent = `${Math.round(zoom * 100)}% · ${angle}°`;
@@ -236,10 +239,48 @@ function mountViewer(media, gallery) {
   if (gallery?.items.length > 1) { const position = document.createElement('span'); position.className = 'gallery-position'; position.textContent = `${gallery.index + 1} / ${gallery.items.length}`; toolbar.append(position); }
   content.append(viewport, toolbar); galleryLayout = layout; media.addEventListener('load',layout); media.addEventListener('loadedmetadata',layout); layout();
 }
+function loadVisual(url, kind, signal) {
+  return new Promise((resolve,reject) => {
+    const media=document.createElement(kind==='image'?'img':'video');
+    if(kind==='video'){media.controls=true;media.preload='metadata';}
+    let settled=false;
+    const finish=(error)=>{
+      if(settled)return;settled=true;clearTimeout(timer);signal.removeEventListener('abort',aborted);media.removeEventListener(event,ready);media.removeEventListener('error',failed);
+      if(error){media.removeAttribute('src');if(kind==='video')media.load();reject(error);}else resolve(media);
+    };
+    const ready=async()=>{try{if(kind==='image'&&media.decode)await media.decode();if(signal.aborted)return aborted();if(!(media.naturalWidth||media.videoWidth))return failed();finish();}catch{failed();}};
+    const failed=()=>finish(new Error('当前浏览器无法预览此文件，请下载查看。'));
+    const aborted=()=>finish(new DOMException('Preview cancelled','AbortError'));
+    const event=kind==='image'?'load':'loadedmetadata';
+    const timer=setTimeout(()=>finish(new Error('预览加载超时，请重试或下载查看。')),30000);
+    signal.addEventListener('abort',aborted,{once:true});media.addEventListener(event,ready);media.addEventListener('error',failed);
+    if(signal.aborted)return aborted();media.src=url;
+  });
+}
 async function renderMedia(name, url, back, headers, gallery = null) {
   const revision = ++previewRevision, archive = currentZip;
+  cancelMediaLoad();
   const current = () => revision === previewRevision && $('#preview-dialog').open;
   const content = $('#preview-content'), kind = fileKind(name);
+  if(kind==='image'||kind==='video') {
+    const controller=new AbortController();mediaLoad=controller;currentGallery=gallery?{...gallery,back}:null;
+    content.querySelector('.media-loading')?.remove();
+    const loading=document.createElement('div');loading.className='media-loading';loading.setAttribute('role','status');loading.textContent='正在加载预览…';content.append(loading);
+    try{
+      if(headers){url=await previewBlob(url,headers,current);if(!url)return;}
+      const media=await loadVisual(url,kind,controller.signal);if(!current())return;
+      // Keep the last decoded image visible until the next frame is ready.
+      for(const old of content.querySelectorAll('video,audio'))old.pause();
+      const retained=url.startsWith('blob:')?url:null;
+      for(const old of previewUrls)if(old!==retained){URL.revokeObjectURL(old);previewUrls.delete(old);}
+      content.replaceChildren();$('#preview-title').textContent=name;galleryLayout=null;
+      if(kind==='image')media.alt=name;
+      if(back){const button=document.createElement('button');button.className='secondary-button zip-header';button.textContent='← 返回压缩包目录';button.onclick=back;content.append(button);}
+      mountViewer(media,currentGallery);
+    }catch(error){if(!current()||error.name==='AbortError')return;loading.textContent=error.message;if(error.status===423&&archive===currentZip&&currentZip)renderZipPassword(error.message);}
+    finally{if(mediaLoad===controller)mediaLoad=null;}
+    return;
+  }
   $('#preview-title').textContent = name;
   clearPreviewMedia(); content.replaceChildren();
   galleryLayout = null; currentGallery = gallery ? { ...gallery, back } : null;
@@ -262,11 +303,12 @@ async function previewBlob(url, headers, current) {
   const blobUrl = URL.createObjectURL(blob); previewUrls.add(blobUrl); return blobUrl;
 }
 async function preview(transfer, file) {
-  const revision = ++previewRevision; clearPreviewMedia(); currentZip = null;
-  showDialog('preview-dialog'); $('#preview-title').textContent = file.name;
+  const revision = ++previewRevision; cancelMediaLoad(); currentZip = null;
+  showDialog('preview-dialog');
   const base = `/api/transfers/${transfer.id}/files/${file.id}`;
   currentGallery = null; galleryLayout = null;
   if (fileKind(file.name) !== 'zip') return renderMedia(file.name, `${base}/preview`, undefined, undefined, mediaGallery(transfer.files, file.id, f => `/api/transfers/${transfer.id}/files/${f.id}/preview`));
+  clearPreviewMedia();$('#preview-title').textContent=file.name;
   $('#preview-content').innerHTML = '<p class="modal-description">正在读取 ZIP 目录…</p>';
   currentZip = { transfer, file, base, entries: [], token: null };
   const archive = currentZip;

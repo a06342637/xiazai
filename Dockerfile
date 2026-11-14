@@ -4,7 +4,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 FROM node:24-alpine AS runtime
-ARG VERSION=1.0.7
+ARG VERSION=1.0.8
 LABEL org.opencontainers.image.title="xiazai" \
       org.opencontainers.image.source="https://github.com/a06342637/xiazai" \
       org.opencontainers.image.version="$VERSION"
