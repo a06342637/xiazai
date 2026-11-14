@@ -60,10 +60,10 @@ try {
   await page.getByRole('button',{name:'关闭二维码'}).click();
   assert.equal(await page.locator('#modal-shade').isVisible(),false);
   const shared=await context.newPage(); await shared.goto(url); await shared.getByRole('heading',{name:'你收到 6 个文件'}).waitFor();
-  await shared.setViewportSize({width:1366,height:600});assert.equal(await shared.locator('.file-list .file-item').count(),4);
+  await shared.setViewportSize({width:1366,height:600});await shared.waitForFunction(()=>document.querySelectorAll('#download-panel .file-item').length===4);
   await shared.getByRole('button',{name:'下一页文件'}).click();assert.equal(await shared.locator('.file-list .file-item').count(),2);await shared.getByRole('button',{name:'上一页文件'}).click();
   await shared.getByRole('button',{name:'预览 preview.png',exact:true}).click();await shared.getByRole('button',{name:'下一个文件'}).click();await shared.getByRole('button',{name:'下一个文件'}).click();assert.equal(await shared.locator('#preview-title').textContent(),'clip.webm');await shared.getByRole('button',{name:'关闭预览'}).click();
-  await shared.setViewportSize({width:1366,height:900});
+  await shared.setViewportSize({width:1366,height:900});await shared.waitForFunction(()=>document.querySelectorAll('#download-panel .file-item').length===6);
   await shared.getByText('永久保留',{exact:true}).waitFor();
   await shared.getByRole('button',{name:'复制 你好.txt 下载直链'}).click();
   const direct=await shared.evaluate(()=>navigator.clipboard.readText());assert.ok(direct.includes('/api/transfers/')&&!direct.includes('/s/'));
