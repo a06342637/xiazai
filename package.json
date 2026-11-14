@@ -1,6 +1,6 @@
 {
   "name": "xiazai",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "private": true,
   "type": "module",
   "description": "Self-hosted temporary file sharing with Docker and online updates",
@@ -19,9 +19,11 @@
     "archiver": "^8.0.0",
     "express": "^5.1.0",
     "multer": "^2.0.2",
+    "qrcode-generator": "^2.0.4",
     "yauzl": "^3.2.0"
   },
   "devDependencies": {
+    "jsqr": "^1.4.0",
     "playwright": "^1.56.1"
   },
   "overrides": {

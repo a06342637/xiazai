@@ -8,9 +8,11 @@
   <title>临时下载 · 让文件轻松抵达</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
+  <script src="/vendor/qrcode.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body data-view="upload">
+  <div id="modal-shade" aria-hidden="true" hidden></div>
   <header class="header">
     <a class="brand" href="/" aria-label="临时下载首页"><span class="brand-icon" data-icon="send"></span><span class="site-name">临时下载</span><span class="brand-divider"></span><span class="brand-caption">文件，轻松抵达</span></a>
     <nav class="nav-actions" aria-label="主导航">
@@ -44,7 +46,7 @@
       </div>
       <div class="share-result" id="share-result" hidden aria-live="polite">
         <div class="success-icon"><span data-icon="check"></span></div><h2>文件准备好了</h2><p id="result-description"></p>
-        <div class="share-link"><input id="share-url" readonly aria-label="文件分享链接"><button class="primary-button" id="copy-link"><span data-icon="copy"></span><span id="copy-label">复制链接</span></button></div>
+        <div class="share-link"><input id="share-url" readonly aria-label="文件分享链接"><div class="share-link-actions"><button class="secondary-button qr-button" id="share-qr" aria-label="显示分享链接二维码" title="分享二维码"><span data-icon="qr"></span></button><button class="primary-button" id="copy-link"><span data-icon="copy"></span><span id="copy-label">复制链接</span></button></div></div>
         <div class="result-meta"><span data-icon="clock"></span><span id="result-expiry"></span></div>
         <div class="result-actions"><a id="open-share" class="secondary-button" target="_blank" rel="noopener">查看文件<span data-icon="arrow"></span></a><button id="send-more" class="secondary-button">继续发送<span data-icon="plus"></span></button></div>
         <div class="file-list result-file-list" id="result-file-list"></div>
@@ -61,7 +63,7 @@
     </section>
     <div class="quiet-note" id="quiet-note">少一点繁琐，多一点自由。<span class="note-line"></span>让分享回归简单。</div>
   </main>
-  <footer><span><a href="https://github.com/a06342637/xiazai" target="_blank" rel="noopener"><span class="footer-brand">XIAZAI</span></a><span class="version" id="footer-version">v1.0.6</span></span><span class="footer-right"><span class="status-dot"></span>由你托管，为你而用</span></footer>
+  <footer><span><a href="https://github.com/a06342637/xiazai" target="_blank" rel="noopener"><span class="footer-brand">XIAZAI</span></a><span class="version" id="footer-version">v1.0.7</span></span><span class="footer-right"><span class="status-dot"></span>由你托管，为你而用</span></footer>
   <dialog id="auth-dialog" class="modal auth-modal" aria-labelledby="auth-title">
     <button class="close-button" data-close="auth-dialog" aria-label="关闭登录窗口"><span data-icon="close"></span></button>
     <div class="modal-mark" data-icon="user"></div><h2 id="auth-title">欢迎回来</h2><p class="modal-description" id="auth-description">登录，管理你分享过的文件。</p>
@@ -72,6 +74,7 @@
   <dialog id="account-dialog" class="modal" aria-labelledby="account-title"><button class="close-button" data-close="account-dialog" aria-label="关闭账号窗口"><span data-icon="close"></span></button><h2 id="account-title">我的账号</h2><p id="account-info" class="modal-description"></p><form id="password-form"><label>当前密码<input id="current-password" type="password" autocomplete="current-password" required></label><label>新密码<input id="new-password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></label><p class="form-error" id="password-error" role="alert"></p><button class="primary-button full-width" type="submit">修改密码</button></form><button class="secondary-button full-width" id="logout-button">退出登录</button><p class="form-hint">忘记管理员密码？在服务器运行重置脚本。</p></dialog>
   <dialog id="settings-dialog" class="modal settings-modal" aria-labelledby="settings-title"><button class="close-button" data-close="settings-dialog" aria-label="关闭设置"><span data-icon="close"></span></button><div class="modal-heading"><span class="modal-mark" data-icon="settings"></span><div><h2 id="settings-title">站点设置</h2><p class="modal-description">存储、清理与系统版本</p></div></div><div id="settings-content"></div></dialog>
   <dialog id="preview-dialog" class="modal preview-modal" aria-labelledby="preview-title"><div class="preview-heading"><h2 id="preview-title">文件预览</h2><button class="close-button" data-close="preview-dialog" aria-label="关闭预览"><span data-icon="close"></span></button></div><div id="preview-content"></div></dialog>
+  <dialog id="qr-dialog" class="modal qr-modal" aria-labelledby="qr-title"><button class="close-button" data-close="qr-dialog" aria-label="关闭二维码"><span data-icon="close"></span></button><div class="modal-mark" data-icon="qr"></div><h2 id="qr-title">扫码查看文件</h2><p class="modal-description" id="qr-description"></p><div class="qr-code"><canvas id="qr-canvas" role="img" aria-label="链接二维码"></canvas></div><p id="qr-filename" class="qr-filename"></p><input id="qr-url" readonly aria-label="二维码链接"><button class="primary-button full-width" id="qr-copy"><span data-icon="copy"></span>复制链接</button></dialog>
   <dialog id="confirm-dialog" class="modal" aria-labelledby="confirm-title"><h2 id="confirm-title">删除这次分享？</h2><p class="modal-description">分享中的文件会被永久删除，链接立即失效。</p><div class="confirm-actions"><button class="secondary-button" data-close="confirm-dialog">保留文件</button><button class="danger-button" id="confirm-delete">删除文件</button></div></dialog>
   <div id="toast" class="toast" role="status" hidden></div>
 </body>

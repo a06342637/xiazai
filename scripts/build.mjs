@@ -18,4 +18,6 @@ if(lock.version !== pkg.version || lock.packages[''].version !== pkg.version) th
 for(const [file,expected] of [['Dockerfile',`ARG VERSION=${pkg.version}`],['.env.example',`xiazai:${pkg.version}`],['public/index.html',`id="footer-version">v${pkg.version}`]]){
   if(!(await readFile(file,'utf8')).includes(expected))throw new Error(`${file} 默认版本不一致`);
 }
+const qrSource = await readFile('node_modules/qrcode-generator/dist/qrcode.js','utf8') + '\n' + await readFile('node_modules/qrcode-generator/dist/qrcode_UTF8.js','utf8');
+if((await readFile('public/vendor/qrcode.js','utf8')).replaceAll('\r\n','\n') !== qrSource.replaceAll('\r\n','\n'))throw new Error('二维码浏览器资源与依赖不一致');
 console.log(`Build verified: v${pkg.version}, ${checked} JavaScript modules, static assets and Docker deployment files.`);

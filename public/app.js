@@ -19,7 +19,12 @@ const icons = {
   image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-7 5 8"/>',
   video:'<rect x="2" y="5" width="14" height="14" rx="2"/><path d="m16 9 6-3v12l-6-3"/>',
   zip:'<path d="M14 2H5v20h14V7l-5-5Zm0 0v5h5M10 3v3m0 2v2m0 2v2"/><rect x="9" y="16" width="3" height="3" rx=".5"/>',
-  folder:'<path d="M3 6h6l2 3h10v11H3V6Z"/>', trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>'
+  folder:'<path d="M3 6h6l2 3h10v11H3V6Z"/>', trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
+  qr:'<path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h2v2h-2zM19 13h2v4m-8-4v3m0 3v2h4m3-2v2h1M12 3v3M3 12h3m3 0h3v-3m6 12h3"/>',
+  left:'<path d="m15 5-7 7 7 7"/>', right:'<path d="m9 5 7 7-7 7"/>',
+  zoomIn:'<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M7 10h6m-3-3v6"/>',
+  zoomOut:'<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M7 10h6"/>',
+  rotate:'<path d="M4 10a8 8 0 1 1 1.5 7M4 3v7h7"/>', reset:'<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/>'
 };
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.file}</svg>`;
 function decorate(root = document) { root.querySelectorAll('[data-icon]').forEach(el => { el.innerHTML = icon(el.dataset.icon); }); }
@@ -32,6 +37,8 @@ const expiryText = transfer => permanentTransfer(transfer) ? '永久保留' : `$
 const activeTransfer = transfer => permanentTransfer(transfer) || transfer.expiresAt > Date.now();
 let config = null, user = null, expiryHours = 24, request = null, toastTimer, authMode = 'login', authNext = null, page = 1, updatePoll = null, pendingDelete;
 let currentZip = null, storagePoll = null, previewRevision = 0, viewRevision = 0, storageRefreshing = false, settingsRevision = 0;
+let currentGallery = null, galleryLayout = null;
+const fileLists = new Map();
 const previewUrls = new Set();
 function clearPreviewMedia() { for (const url of previewUrls) URL.revokeObjectURL(url); previewUrls.clear(); }
 async function api(url, options = {}) {
@@ -42,9 +49,13 @@ async function api(url, options = {}) {
   return value;
 }
 function toast(message) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').hidden = false; toastTimer = setTimeout(() => $('#toast').hidden = true, 4000); }
-function showDialog(name) { const dialog = $(`#${name}`); if (!dialog.open) dialog.showModal(); }
-function clearPreview() { previewRevision++; clearPreviewMedia(); $('#preview-content').replaceChildren(); currentZip = null; }
-function closeDialog(name) { if(name === 'preview-dialog')clearPreview(); $(`#${name}`).close(); }
+function syncModals() {
+  const opened = Boolean(document.querySelector('dialog[open]'));
+  document.documentElement.classList.toggle('modal-open', opened); document.body.classList.toggle('modal-open', opened); $('#modal-shade').hidden = !opened;
+}
+function showDialog(name) { const dialog = $(`#${name}`); if (!dialog.open) dialog.showModal(); syncModals(); }
+function clearPreview() { previewRevision++; clearPreviewMedia(); galleryLayout = null; currentGallery = null; $('#preview-content').replaceChildren(); currentZip = null; }
+function closeDialog(name) { if(name === 'preview-dialog')clearPreview(); $(`#${name}`).close(); syncModals(); }
 function updateUser(next) { user = next; $('#account-label').textContent = user ? user.username : '登录 / 注册'; $('#panel-note').textContent = user ? '上传完成后自动复制链接，并保存到我的文件' : '上传完成后自动生成链接，并复制到剪贴板'; }
 function applyConfig(next) {
   config = next; document.title = `${config.siteName} · 让文件轻松抵达`;
@@ -58,7 +69,7 @@ function applyConfig(next) {
   $('#expiry-options').querySelectorAll('button').forEach(button => button.onclick = () => { expiryHours = button.dataset.hours === 'permanent' ? 'permanent' : Number(button.dataset.hours); $('#expiry-options .active')?.classList.remove('active'); button.classList.add('active'); $('.option-note').textContent = expiryHours === 'permanent' ? '保留至手动删除' : '到期自动失效'; });
 }
 function setTheme(theme) { document.documentElement.dataset.theme = theme; try { localStorage.setItem('xiazai-theme', theme); } catch {} $('#theme-button').innerHTML = icon(theme === 'dark' ? 'moon' : 'sun'); }
-function resetUpload() { $('#dropzone').hidden = false; $('#upload-progress').hidden = true; $('#share-result').hidden = true; $('#upload-options').hidden = false; $('#result-file-list').replaceChildren(); $('#copy-label').textContent = '复制链接'; $('#file-input').value = ''; request = null; }
+function resetUpload() { $('#dropzone').hidden = false; $('#upload-progress').hidden = true; $('#share-result').hidden = true; $('#upload-options').hidden = false; fileLists.delete($('#result-file-list')); $('#result-file-list').replaceChildren(); $('#copy-label').textContent = '复制链接'; $('#file-input').value = ''; request = null; }
 async function copy(text, automatic = false) {
   try {
     if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
@@ -70,6 +81,22 @@ async function copy(text, automatic = false) {
   } catch { if (!automatic) toast('请长按或选中链接复制'); return false; }
 }
 function shareUrl(transfer) { return `${config.publicUrl || location.origin}/s/${transfer.id}`; }
+function directUrl(transfer, fileId) { return `${config.publicUrl || location.origin}/api/transfers/${transfer.id}/files/${fileId}`; }
+function showQr(url, filename, download = false) {
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error();
+    const code = qrcode(0, 'M'); code.addData(url, 'Byte'); code.make();
+    const count = code.getModuleCount(), cell = Math.max(3, Math.floor(768 / (count + 8)));
+    const canvas = $('#qr-canvas'); canvas.width = canvas.height = (count + 8) * cell;
+    const ctx = canvas.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = '#153e2e';
+    for (let row = 0; row < count; row++) for (let col = 0; col < count; col++) if (code.isDark(row, col)) ctx.fillRect((col + 4) * cell, (row + 4) * cell, cell, cell);
+    $('#qr-title').textContent = download ? '扫码下载文件' : '扫码查看文件';
+    $('#qr-description').textContent = download ? '手机扫一扫，直接下载这个文件。' : '手机扫一扫，打开分享页面。';
+    $('#qr-filename').textContent = filename || ''; $('#qr-url').value = url;
+    showDialog('qr-dialog');
+  } catch { toast('链接过长或无效，无法生成二维码，请复制链接分享'); }
+}
 function upload(files) {
   if (!config || request || !files.length) return;
   const total = [...files].reduce((n,f) => n + f.size, 0);
@@ -95,8 +122,7 @@ function upload(files) {
     $('#share-url').value = url; $('#open-share').href = `/s/${transfer.id}`;
     $('#result-description').textContent = `${transfer.files.length} 个文件 · ${bytes(transfer.totalSize)}，现在就分享给对方吧。`;
     $('#result-expiry').textContent = permanentTransfer(transfer) ? '永久保留，分享链接持续有效' : `${date(transfer.expiresAt)} 到期，链接自动失效`;
-    $('#result-file-list').innerHTML = transfer.files.map(file => fileRow(transfer, file)).join('');
-    bindFiles($('#result-file-list'), transfer);
+    renderFileList($('#result-file-list'), transfer);
     const done = await copy(url, true); $('#copy-label').textContent = done ? '已复制' : '复制链接';
     if (!done) toast('上传成功，点击复制链接即可分享');
   };
@@ -114,11 +140,22 @@ function fileKind(name) {
 }
 function fileRow(transfer, file) {
   const kind = fileKind(file.name);
-  return `<div class="file-item"><div class="file-row"><span class="file-icon">${icon(kind)}</span><button class="file-info file-expand-button" data-expand="${file.id}" aria-label="展开 ${escape(file.name)}" aria-expanded="false"><span class="file-name">${escape(file.name)}</span><span class="file-size">${bytes(file.size)} · 点击展开</span></button><div class="file-actions">${kind !== 'file' ? `<button data-preview="${file.id}" aria-label="预览 ${escape(file.name)}" title="${kind === 'zip' ? '查看压缩包':'预览'}">${icon('eye')}</button>`:''}<a href="/api/transfers/${transfer.id}/files/${file.id}" aria-label="下载 ${escape(file.name)}" title="下载">${icon('download')}</a><button class="direct-link-button" data-direct="${file.id}" aria-label="复制 ${escape(file.name)} 下载直链" title="复制下载直链">直链</button></div></div><div class="inline-preview" hidden></div></div>`;
+  return `<div class="file-item"><div class="file-row"><span class="file-icon">${icon(kind)}</span><button class="file-info file-expand-button" data-expand="${file.id}" aria-label="展开 ${escape(file.name)}" aria-expanded="false"><span class="file-name">${escape(file.name)}</span><span class="file-size">${bytes(file.size)} · 点击展开</span></button><div class="file-actions">${kind !== 'file' ? `<button data-preview="${file.id}" aria-label="预览 ${escape(file.name)}" title="${kind === 'zip' ? '查看压缩包':'预览'}">${icon('eye')}</button>`:''}<button data-file-qr="${file.id}" aria-label="显示 ${escape(file.name)} 下载二维码" title="下载二维码">${icon('qr')}</button><a href="/api/transfers/${transfer.id}/files/${file.id}" aria-label="下载 ${escape(file.name)}" title="下载">${icon('download')}</a><button class="direct-link-button" data-direct="${file.id}" aria-label="复制 ${escape(file.name)} 下载直链" title="复制下载直链">直链</button></div></div><div class="inline-preview" hidden></div></div>`;
+}
+function listPageSize() { return innerWidth <= 560 ? 4 : Math.max(4, Math.min(8, Math.floor((innerHeight - 400) / 54))); }
+function renderFileList(container, transfer, targetPage = 1) {
+  const size = listPageSize(), totalPages = Math.max(1, Math.ceil(transfer.files.length / size)), current = Math.min(Math.max(1, targetPage), totalPages);
+  fileLists.set(container, { transfer, page: current, size }); container.classList.toggle('compact-files', transfer.files.length > 4);
+  container.innerHTML = `<div class="file-page-rows">${transfer.files.slice((current - 1) * size, current * size).map(file => fileRow(transfer, file)).join('')}</div>${totalPages > 1 ? `<nav class="file-pagination" aria-label="文件列表分页"><button class="secondary-button list-prev" ${current === 1 ? 'disabled' : ''} aria-label="上一页文件">${icon('left')}</button><span>${current} / ${totalPages} 页 · 共 ${transfer.files.length} 个文件</span><button class="secondary-button list-next" ${current === totalPages ? 'disabled' : ''} aria-label="下一页文件">${icon('right')}</button></nav>` : ''}`;
+  bindFiles(container, transfer);
+  for (const [selector, offset] of [['.list-prev', -1], ['.list-next', 1]]) {
+    const button = container.querySelector(selector); if(button) button.onclick = () => renderFileList(container, transfer, current + offset);
+  }
 }
 function bindFiles(panel, transfer) {
   panel.querySelectorAll('[data-preview]').forEach(button => button.onclick = () => preview(transfer, transfer.files.find(f => f.id === button.dataset.preview)));
-  panel.querySelectorAll('[data-direct]').forEach(button => button.onclick = () => copy(`${config.publicUrl || location.origin}/api/transfers/${transfer.id}/files/${button.dataset.direct}`));
+  panel.querySelectorAll('[data-direct]').forEach(button => button.onclick = () => copy(directUrl(transfer, button.dataset.direct)));
+  panel.querySelectorAll('[data-file-qr]').forEach(button => button.onclick = () => showQr(directUrl(transfer, button.dataset.fileQr), transfer.files.find(f => f.id === button.dataset.fileQr).name, true));
   panel.querySelectorAll('[data-expand]').forEach(button => button.onclick = async () => {
     const target = button.closest('.file-item').querySelector('.inline-preview'), file = transfer.files.find(f => f.id === button.dataset.expand);
     const expanded = button.getAttribute('aria-expanded') !== 'true';
@@ -146,21 +183,66 @@ function setView(view) {
 }
 async function renderShare(id) {
   setView('download'); $('#hero h1').innerHTML = '文件已抵达，<span>请查收。</span>'; $('#hero>p').textContent = '先预览，再下载。无需登录，打开即用。';
-  const panel = $('#download-panel'); panel.innerHTML = '<div class="empty-state"><p>正在获取文件…</p></div>';
+  const panel = $('#download-panel'); for(const container of fileLists.keys())if(panel.contains(container))fileLists.delete(container);panel.innerHTML = '<div class="empty-state"><p>正在获取文件…</p></div>';
   const revision = viewRevision;
   try {
     const transfer = await api(`/api/transfers/${encodeURIComponent(id)}`);
     if (revision !== viewRevision) return;
     panel.innerHTML = `<div class="download-head"><div><h2>你收到 ${transfer.files.length} 个文件</h2><p>总大小 ${bytes(transfer.totalSize)} · ${date(transfer.createdAt)} 分享</p></div><a class="primary-button" href="/api/transfers/${transfer.id}/zip">${icon('download')}打包下载</a></div><div class="file-list">${transfer.files.map(file => fileRow(transfer,file)).join('')}</div><div class="download-foot"><span>${icon('clock')}${expiryText(transfer)}</span><a href="/" class="text-button">我也要发送文件 →</a></div>`;
-    bindFiles(panel, transfer);
+    const list = panel.querySelector('.file-list'); renderFileList(list, transfer);
   } catch (error) { if(revision === viewRevision) panel.innerHTML = `<div class="empty-state"><div class="success-icon">${icon('clock')}</div><h2>这份分享已经离开了</h2><p>${escape(error.message)}<br>请联系发送者重新上传。</p><a class="primary-button" href="/">返回首页</a></div>`; }
 }
-async function renderMedia(name, url, back, headers) {
+function mediaGallery(files, selectedId, baseFor, headers) {
+  const items = files.filter(file => ['image','video'].includes(fileKind(file.name))).map(file => ({ name: file.name, url: baseFor(file), headers, id: file.id ?? file.index }));
+  const index = items.findIndex(file => file.id === selectedId);
+  return index < 0 ? null : { items, index };
+}
+function galleryStep(offset) {
+  if (!currentGallery || !$('#preview-dialog').open) return;
+  const next = currentGallery.index + offset;
+  if (next < 0 || next >= currentGallery.items.length) return;
+  const gallery = { ...currentGallery, index: next }, item = gallery.items[next];
+  renderMedia(item.name, item.url, gallery.back, item.headers, gallery);
+}
+function mountViewer(media, gallery) {
+  const content = $('#preview-content');
+  const viewport = document.createElement('div'); viewport.className = 'media-viewer';
+  const stage = document.createElement('div'); stage.className = 'media-stage';
+  const surface = document.createElement('div'); surface.className = 'media-surface'; surface.append(media); stage.append(surface); viewport.append(stage);
+  if (gallery?.items.length > 1) {
+    for (const [direction,label,offset] of [['left','上一个文件',-1],['right','下一个文件',1]]) {
+      const button = document.createElement('button'); button.className = `gallery-arrow gallery-${direction}`; button.setAttribute('aria-label', label); button.innerHTML = icon(direction);
+      button.disabled = gallery.index + offset < 0 || gallery.index + offset >= gallery.items.length; button.onclick = () => galleryStep(offset); viewport.append(button);
+    }
+  }
+  const toolbar = document.createElement('div'); toolbar.className = 'media-toolbar'; toolbar.setAttribute('aria-label','预览工具');
+  let zoom = 1, angle = 0;
+  const status = document.createElement('span'); status.className = 'media-zoom'; status.setAttribute('aria-live','polite');
+  const layout = () => {
+    if (!stage.isConnected) return;
+    const width = media.naturalWidth || media.videoWidth || 640, height = media.naturalHeight || media.videoHeight || 360;
+    const rotated = angle % 180 !== 0;
+    const scale = Math.min((stage.clientWidth - 24) / (rotated ? height : width), (stage.clientHeight - 24) / (rotated ? width : height), 1) * zoom;
+    surface.style.width = `${Math.max(stage.clientWidth, (rotated ? height : width) * scale + 24)}px`;
+    surface.style.height = `${Math.max(stage.clientHeight, (rotated ? width : height) * scale + 24)}px`;
+    media.style.width = `${width * scale}px`; media.style.height = `${height * scale}px`; media.style.transform = `translate(-50%, -50%) rotate(${angle}deg)`;
+    stage.scrollLeft = (surface.offsetWidth - stage.clientWidth) / 2; stage.scrollTop = (surface.offsetHeight - stage.clientHeight) / 2;
+    status.textContent = `${Math.round(zoom * 100)}% · ${angle}°`;
+  };
+  for (const [name,label,action] of [['zoomOut','缩小',()=>zoom=Math.max(.25,zoom-.25)],['zoomIn','放大',()=>zoom=Math.min(4,zoom+.25)],['rotate','旋转',()=>angle=(angle+90)%360],['reset','重置预览',()=>{zoom=1;angle=0;}]]) {
+    const button = document.createElement('button'); button.className = 'secondary-button'; button.setAttribute('aria-label',label); button.title = label; button.innerHTML = icon(name); button.onclick = () => {action();layout();}; toolbar.append(button);
+  }
+  toolbar.append(status);
+  if (gallery?.items.length > 1) { const position = document.createElement('span'); position.className = 'gallery-position'; position.textContent = `${gallery.index + 1} / ${gallery.items.length}`; toolbar.append(position); }
+  content.append(viewport, toolbar); galleryLayout = layout; media.addEventListener('load',layout); media.addEventListener('loadedmetadata',layout); layout();
+}
+async function renderMedia(name, url, back, headers, gallery = null) {
   const revision = ++previewRevision, archive = currentZip;
   const current = () => revision === previewRevision && $('#preview-dialog').open;
   const content = $('#preview-content'), kind = fileKind(name);
   $('#preview-title').textContent = name;
   clearPreviewMedia(); content.replaceChildren();
+  galleryLayout = null; currentGallery = gallery ? { ...gallery, back } : null;
   if (back) { const button = document.createElement('button'); button.className = 'secondary-button zip-header'; button.textContent = '← 返回压缩包目录'; button.onclick = back; content.append(button); }
   const failed = () => { if(!current())return;const notice = document.createElement('p'); notice.className = 'modal-description'; notice.textContent = '无法预览此文件，格式可能不受当前浏览器支持，请下载查看。'; content.append(notice); };
   if (kind === 'text') {
@@ -169,7 +251,7 @@ async function renderMedia(name, url, back, headers) {
     if (headers) { try { url = await previewBlob(url, headers, current); if(!url)return; } catch(error) { if(!current())return;if(error.status === 423 && archive === currentZip) return renderZipPassword(error.message); return failed(); } }
     const media = document.createElement(kind === 'image' ? 'img' : kind); media.src = url; media.onerror = failed;
     if (kind === 'image') media.alt = name; else { media.controls = true; media.preload = 'metadata'; }
-    content.append(media);
+    if (kind === 'image' || kind === 'video') mountViewer(media, currentGallery); else content.append(media);
   } else if (kind === 'pdf') { if (headers) { try { url = await previewBlob(url, headers, current); if(!url)return; } catch(error) {if(!current())return;if(error.status === 423 && archive === currentZip)return renderZipPassword(error.message);return failed();} } const frame = document.createElement('iframe'); frame.title = name; frame.src = url; content.append(frame); }
   else failed();
 }
@@ -183,7 +265,8 @@ async function preview(transfer, file) {
   const revision = ++previewRevision; clearPreviewMedia(); currentZip = null;
   showDialog('preview-dialog'); $('#preview-title').textContent = file.name;
   const base = `/api/transfers/${transfer.id}/files/${file.id}`;
-  if (fileKind(file.name) !== 'zip') return renderMedia(file.name, `${base}/preview`);
+  currentGallery = null; galleryLayout = null;
+  if (fileKind(file.name) !== 'zip') return renderMedia(file.name, `${base}/preview`, undefined, undefined, mediaGallery(transfer.files, file.id, f => `/api/transfers/${transfer.id}/files/${f.id}/preview`));
   $('#preview-content').innerHTML = '<p class="modal-description">正在读取 ZIP 目录…</p>';
   currentZip = { transfer, file, base, entries: [], token: null };
   const archive = currentZip;
@@ -193,6 +276,7 @@ async function preview(transfer, file) {
 function renderZipPassword(message = '') {
   if (!currentZip || !$('#preview-dialog').open) return;
   previewRevision++;
+  currentGallery = null; galleryLayout = null;
   clearPreviewMedia(); currentZip.token = null; $('#preview-title').textContent = currentZip.file.name;
   $('#preview-content').innerHTML = `<div class="zip-unlock"><div class="success-icon">${icon('lock')}</div><h3>输入密码，打开压缩包</h3><p class="modal-description">此 ZIP 已加密，输入解压密码后即可查看和下载内部文件。</p><form id="zip-password-form"><label>解压密码<input id="zip-password" type="password" autocomplete="off" maxlength="256" required placeholder="输入 ZIP 解压密码"></label><p class="form-error" id="zip-password-error" role="alert">${escape(message)}</p><button type="submit" class="primary-button">解锁并查看</button></form></div>`;
   $('#zip-password-form').onsubmit = async event => {
@@ -210,11 +294,12 @@ function renderZipPassword(message = '') {
 function renderZip() {
   if(!currentZip || !$('#preview-dialog').open)return;
   previewRevision++;
+  currentGallery = null; galleryLayout = null;
   clearPreviewMedia(); const {file,base,entries,token} = currentZip; $('#preview-title').textContent = file.name;
   $('#preview-content').innerHTML = `<div class="zip-header">${icon('zip')}ZIP 在线目录 · ${entries.length} 项${token ? ' · 已解锁' : ' · 无需下载整个压缩包'}</div>${entries.map(entry => `<div class="zip-entry"><span data-icon="${entry.directory?'folder':fileKind(entry.name)}"></span><span class="entry-name">${escape(entry.name)}</span><span class="entry-size">${entry.directory?'':bytes(entry.size)}</span>${!entry.directory?`<div class="file-actions">${fileKind(entry.name)!=='file' && fileKind(entry.name)!=='zip'?`<button data-entry-preview="${entry.index}" aria-label="预览 ${escape(entry.name)}">${icon('eye')}</button>`:''}${token?`<button data-entry-download="${entry.index}" aria-label="下载 ${escape(entry.name)}">${icon('download')}</button>`:`<a href="${base}/entries/${entry.index}" aria-label="下载 ${escape(entry.name)}">${icon('download')}</a>`}</div>`:''}</div>`).join('') || '<p>压缩包为空。</p>'}`;
   decorate($('#preview-content'));
   const headers = token ? { Authorization: `ZIP ${token}` } : undefined;
-  $('#preview-content').querySelectorAll('[data-entry-preview]').forEach(button => button.onclick = () => { const entry = entries[Number(button.dataset.entryPreview)]; renderMedia(entry.name, `${base}/entries/${entry.index}?preview=1`, renderZip, headers); });
+  $('#preview-content').querySelectorAll('[data-entry-preview]').forEach(button => button.onclick = () => { const entry = entries[Number(button.dataset.entryPreview)]; renderMedia(entry.name, `${base}/entries/${entry.index}?preview=1`, renderZip, headers, mediaGallery(entries, entry.index, e => `${base}/entries/${e.index}?preview=1`, headers)); });
   $('#preview-content').querySelectorAll('[data-entry-download]').forEach(button => button.onclick = async () => {
     const archive = currentZip;
     const entry = entries[Number(button.dataset.entryDownload)]; button.disabled = true;
@@ -321,6 +406,7 @@ try { setTheme(localStorage.getItem('xiazai-theme') || 'light'); } catch { setTh
 $('#theme-button').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark'?'light':'dark');
 document.querySelectorAll('[data-close]').forEach(button => button.onclick = () => closeDialog(button.dataset.close));
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } }));
+document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('close', syncModals));
 $('#preview-dialog').addEventListener('close', clearPreview);
 $('#settings-dialog').addEventListener('close', () => { settingsRevision++;clearInterval(updatePoll); updatePoll = null; clearInterval(storagePoll); storagePoll = null; });
 $('#select-button').onclick = event => { event.stopPropagation(); $('#file-input').click(); };
@@ -335,6 +421,17 @@ $('#dropzone').ondrop = event => { event.preventDefault(); dragDepth = 0; $('#dr
 window.addEventListener('dragover', event => event.preventDefault()); window.addEventListener('drop', event => event.preventDefault());
 $('#cancel-upload').onclick = () => request?.abort(); $('#send-more').onclick = resetUpload;
 $('#copy-link').onclick = async () => { if(await copy($('#share-url').value)) $('#copy-label').textContent = '已复制'; };
+$('#share-qr').onclick = () => showQr($('#share-url').value, '文件分享链接');
+$('#qr-copy').onclick = () => copy($('#qr-url').value);
+$('#qr-dialog').addEventListener('close', () => { $('#qr-url').value = ''; $('#qr-canvas').getContext('2d').clearRect(0,0,$('#qr-canvas').width,$('#qr-canvas').height); });
+window.addEventListener('resize', () => {
+  galleryLayout?.();
+  for(const [container,state] of fileLists) { if(!container.isConnected){fileLists.delete(container);continue;}if(state.size !== listPageSize())renderFileList(container,state.transfer,Math.floor((state.page-1)*state.size/listPageSize())+1); }
+});
+$('#preview-dialog').addEventListener('keydown', event => {
+  if (!currentGallery || /^(INPUT|TEXTAREA|SELECT|VIDEO|AUDIO)$/.test(event.target.tagName) || event.altKey || event.ctrlKey || event.metaKey) return;
+  if(event.key === 'ArrowLeft' || event.key === 'ArrowRight') {event.preventDefault();galleryStep(event.key === 'ArrowLeft' ? -1 : 1);}
+});
 $('#account-button').onclick = () => { if(!user) return openAuth(); $('#account-info').textContent = `${user.username} · ${user.role==='admin'?'管理员':'普通账号'}`; $('#password-error').textContent = ''; showDialog('account-dialog'); };
 $('#login-tab').onclick = () => changeAuthMode('login'); $('#register-tab').onclick = () => changeAuthMode('register');
 $('#auth-form').onsubmit = async event => {
