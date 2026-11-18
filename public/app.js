@@ -107,19 +107,16 @@ function upload(files) {
   document.body.dataset.view = 'upload';
   $('#progress-title').textContent = '正在上传…'; $('#progress-detail').textContent = `${files.length} 个文件 · ${bytes(total)} · 请保持页面打开`;
   $('#progress-fill').style.width = '0%'; $('#progress-percent').textContent = '0%';
-  const form = new FormData(); [...files].forEach(file => form.append('files', file));
-  request = new XMLHttpRequest(); const xhr = request;
-  xhr.open('POST', `/api/upload?hours=${expiryHours}`); xhr.responseType = 'json';
-  xhr.upload.onprogress = event => {
-    if (!event.lengthComputable) return;
-    const progress = Math.round(event.loaded / event.total * 100);
-    $('#progress-fill').style.width = `${progress}%`; $('#progress-percent').textContent = `${progress}%`;
-    if (progress === 100) $('#progress-title').textContent = '正在生成链接…';
-  };
-  xhr.onload = async () => {
+  $('#pause-upload').textContent = '暂停上传';
+  const client = new ResumableClient(files, expiryHours, user?.id, {
+    progress: (loaded,total) => { const progress=total?Math.min(100,Math.floor(loaded/total*100)):100;$('#progress-fill').style.width=`${progress}%`;$('#progress-percent').textContent=`${progress}%`; },
+    message: text => $('#progress-title').textContent=text,
+    paused: () => {if(request!==client)return;$('#progress-title').textContent='上传已暂停，进度已保留';$('#pause-upload').textContent='继续上传';$('#progress-detail').textContent='点击继续；刷新页面后重新选择原文件也可恢复。';},
+    error: error => {if(request!==client)return;if([404,410,507].includes(error.status)){resetUpload();toast(error.message);return;}$('#progress-title').textContent='上传中断，已保存断点';$('#progress-detail').textContent=error.message;$('#pause-upload').textContent='继续上传';toast('进度已保留，可继续上传');},
+    complete: async transfer => {
+    if(request!==client)return;
     request = null;
-    if (xhr.status !== 201) { resetUpload(); return toast(xhr.response?.error || '上传失败，请重试'); }
-    const transfer = xhr.response, url = shareUrl(transfer);
+    const url = shareUrl(transfer);
     $('#upload-progress').hidden = true; $('#share-result').hidden = false;
     $('#share-url').value = url; $('#open-share').href = `/s/${transfer.id}`;
     $('#result-description').textContent = `${transfer.files.length} 个文件 · ${bytes(transfer.totalSize)}，现在就分享给对方吧。`;
@@ -127,9 +124,9 @@ function upload(files) {
     renderFileList($('#result-file-list'), transfer);
     const done = await copy(url, true); $('#copy-label').textContent = done ? '已复制' : '复制链接';
     if (!done) toast('上传成功，点击复制链接即可分享');
-  };
-  xhr.onerror = () => { resetUpload(); toast('网络连接中断，请重试'); };
-  xhr.onabort = () => { resetUpload(); toast('上传已取消'); }; xhr.send(form);
+    }
+  });
+  request=client;client.start();
 }
 function fileKind(name) {
   const ext = name.split('.').pop().toLowerCase();
@@ -461,7 +458,8 @@ $('#dropzone').ondragover = event => { event.preventDefault(); event.dataTransfe
 $('#dropzone').ondragleave = event => { event.preventDefault(); if(--dragDepth<=0) $('#dropzone').classList.remove('dragging'); };
 $('#dropzone').ondrop = event => { event.preventDefault(); dragDepth = 0; $('#dropzone').classList.remove('dragging'); upload(event.dataTransfer.files); };
 window.addEventListener('dragover', event => event.preventDefault()); window.addEventListener('drop', event => event.preventDefault());
-$('#cancel-upload').onclick = () => request?.abort(); $('#send-more').onclick = resetUpload;
+$('#pause-upload').onclick = () => {if(!request)return;if(request.active)request.pause();else{$('#pause-upload').textContent='暂停上传';request.start();}};
+$('#cancel-upload').onclick = async () => {const client=request;if(!client)return;try{await client.cancel();resetUpload();toast('上传已取消，未完成文件已清理');}catch(error){toast(error.message);}}; $('#send-more').onclick = resetUpload;
 $('#copy-link').onclick = async () => { if(await copy($('#share-url').value)) $('#copy-label').textContent = '已复制'; };
 $('#share-qr').onclick = () => showQr($('#share-url').value, '文件分享链接');
 $('#qr-copy').onclick = () => copy($('#qr-url').value);
@@ -489,5 +487,5 @@ $('#password-form').onsubmit = async event => {
 };
 $('#history-button').onclick = () => showHistory(); $('#settings-button').onclick = showSettings;
 $('#confirm-delete').onclick = async () => { const button = $('#confirm-delete'); button.disabled = true; try { await api(`/api/history/${pendingDelete}`,{method:'DELETE'}); closeDialog('confirm-dialog'); toast('文件已删除'); showHistory(page); } catch(error) { toast(error.message); } finally { button.disabled = false; } };
-window.addEventListener('beforeunload', event => { if(request) { event.preventDefault(); event.returnValue = ''; } });
-Promise.all([api('/api/config'), api('/api/auth/me')]).then(([next,account]) => { applyConfig(next); updateUser(account.user); const share = location.pathname.match(/^\/s\/([A-Za-z0-9_-]+)$/); if(share) renderShare(share[1]); }).catch(error => { $('#upload-limit').textContent = '服务连接失败，请刷新页面'; toast(error.message); });
+window.addEventListener('beforeunload', event => { if(request?.active) { event.preventDefault(); event.returnValue = ''; } });
+Promise.all([api('/api/config'), api('/api/auth/me')]).then(([next,account]) => { applyConfig(next); updateUser(account.user); const share = location.pathname.match(/^\/s\/([A-Za-z0-9_-]+)$/); if(share) renderShare(share[1]);else if(ResumableClient.hasPending())toast('有未完成上传，重新选择相同文件可断点续传'); }).catch(error => { $('#upload-limit').textContent = '服务连接失败，请刷新页面'; toast(error.message); });

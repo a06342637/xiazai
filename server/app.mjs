@@ -8,6 +8,7 @@ import { Store } from './store.mjs';
 import { parseUpload } from './upload.mjs';
 import { getRelease, newer } from './releases.mjs';
 import { Auth } from './auth.mjs';
+import { ResumableUploads } from './resumable.mjs';
 import { previewType, isText, textPreview, zipEntries, readZipEntry, unlockZip } from './preview.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
@@ -16,6 +17,7 @@ const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url
 export async function createApp({ dataDir, adminUsername = 'admin', adminPassword, publicUrl = '', updateKey, updaterUrl, clock = Date.now, releaseFetcher = getRelease, diskProbe } = {}) {
   const store = new Store(dataDir, clock, diskProbe); await store.init();
   const auth = new Auth(store.root, clock); await auth.init(adminUsername, adminPassword);
+  const uploads = new ResumableUploads(store, clock); await uploads.init();
   const app = express(); app.disable('x-powered-by');
   let activeUploads = 0, closing = false, maintenance = false;
   const failures = new Map();
@@ -45,6 +47,7 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     }
     next();
   });
+  app.use('/api/uploads', express.json({ limit: '1mb' }));
   app.use(express.json({ limit: '32kb' }));
   app.use((req, res, next) => {
     if (['/api/auth/login', '/api/auth/register', '/api/auth/password'].includes(req.path.toLowerCase().replace(/\/+$/, '')) && !['GET','HEAD'].includes(req.method) &&
@@ -101,6 +104,23 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
   app.get('/api/config', (req, res) => res.json({ version: pkg.version, siteName: store.settings.siteName,
     retentionHours: store.settings.retentionHours, diskStopPercent: 95,
     publicUrl: publicUrl || store.settings.publicUrl }));
+  const uploadOperation = async action => {
+    const state = await updateState();
+    if (closing || maintenance || !terminal.has(state.phase)) throw httpError(503, '系统正在更新，请稍后继续上传');
+    if (activeUploads >= 5) throw httpError(429, '当前上传人数较多，请稍后重试');
+    activeUploads++;
+    try { return await action(); } finally { activeUploads--; }
+  };
+  const uploadSession = req => uploads.authorize(req.params.id, req.headers.authorization?.replace(/^Upload /, ''), req.user);
+  app.post('/api/uploads', async (req, res) => res.status(201).json(await uploadOperation(() => uploads.create(req.body, req.user, store.settings.retentionHours))));
+  app.get('/api/uploads/:id', (req, res) => res.json(uploads.status(uploadSession(req))));
+  app.put('/api/uploads/:id/files/:fileId', async (req, res) => {
+    const session = uploadSession(req);
+    try { res.json(await uploadOperation(() => uploads.chunk(session, req.params.fileId, req))); }
+    catch (error) { if (!req.readableEnded) res.set('Connection', 'close'); throw error; }
+  });
+  app.post('/api/uploads/:id/complete', async (req, res) => res.json(await uploadOperation(() => uploads.complete(uploadSession(req)))));
+  app.delete('/api/uploads/:id', async (req, res) => res.json(await uploads.cancel(uploadSession(req))));
   app.post('/api/upload', async (req, res) => {
     const state = await updateState();
     if (closing || maintenance || !terminal.has(state.phase)) throw httpError(503, '系统正在更新，请稍后上传');
@@ -281,10 +301,11 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
     res.status(status).json({ error: message });
   });
   const scheduler = setInterval(() => {
+    uploads.cleanup().catch(error => console.error('过期断点上传清理失败:', error.message));
     for(const [key,entry] of failures)if(entry.until <= clock())failures.delete(key);
     for(const [token, access] of zipAccess)if(access.expiresAt <= clock())zipAccess.delete(token);
     for(const [key, attempt] of zipAttempts)if(attempt.until <= clock())zipAttempts.delete(key);
     if (clock() >= store.system.lastCleanupAt + store.settings.cleanupIntervalHours * 3600000) store.cleanup().catch(e => console.error('清理失败:', e.message));
   }, 60000); scheduler.unref();
-  return { app, store, auth, version: pkg.version, close: () => { closing = true; clearInterval(scheduler); zipAccess.clear(); zipAttempts.clear(); }, get activeUploads() { return activeUploads; } };
+  return { app, store, auth, uploads, version: pkg.version, close: () => { closing = true; clearInterval(scheduler); zipAccess.clear(); zipAttempts.clear(); }, get activeUploads() { return activeUploads; } };
 }

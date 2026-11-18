@@ -9,6 +9,7 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
   <script src="/vendor/qrcode.js" defer></script>
+  <script src="/resumable.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body data-view="upload">
@@ -42,7 +43,7 @@
         <div class="progress-icon"><span data-icon="upload"></span></div><h2 id="progress-title">正在上传…</h2>
         <p id="progress-detail">请保持页面打开</p>
         <div class="progress-track"><div id="progress-fill"></div></div>
-        <div class="progress-footer"><span id="progress-percent">0%</span><button class="text-button" id="cancel-upload">取消上传</button></div>
+        <div class="progress-footer"><span id="progress-percent">0%</span><div><button class="text-button" id="pause-upload">暂停上传</button><button class="text-button" id="cancel-upload">取消上传</button></div></div>
       </div>
       <div class="share-result" id="share-result" hidden aria-live="polite">
         <div class="success-icon"><span data-icon="check"></span></div><h2>文件准备好了</h2><p id="result-description"></p>
@@ -63,7 +64,7 @@
     </section>
     <div class="quiet-note" id="quiet-note">少一点繁琐，多一点自由。<span class="note-line"></span>让分享回归简单。</div>
   </main>
-  <footer><span><a href="https://github.com/a06342637/xiazai" target="_blank" rel="noopener"><span class="footer-brand">XIAZAI</span></a><span class="version" id="footer-version">v1.0.8</span></span><span class="footer-right"><span class="status-dot"></span>由你托管，为你而用</span></footer>
+  <footer><span><a href="https://github.com/a06342637/xiazai" target="_blank" rel="noopener"><span class="footer-brand">XIAZAI</span></a><span class="version" id="footer-version">v1.0.9</span></span><span class="footer-right"><span class="status-dot"></span>由你托管，为你而用</span></footer>
   <dialog id="auth-dialog" class="modal auth-modal" aria-labelledby="auth-title">
     <button class="close-button" data-close="auth-dialog" aria-label="关闭登录窗口"><span data-icon="close"></span></button>
     <div class="modal-mark" data-icon="user"></div><h2 id="auth-title">欢迎回来</h2><p class="modal-description" id="auth-description">登录，管理你分享过的文件。</p>

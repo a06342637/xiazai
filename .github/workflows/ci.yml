@@ -20,6 +20,7 @@ jobs:
       - run: bash -n install.sh reset-admin.sh
       - run: npx playwright install --with-deps chromium
       - run: npm run smoke
+      - run: npm run smoke:resumable
       - run: docker build -t xiazai-test .
       - run: node scripts/docker-smoke.mjs xiazai-test
       - run: node scripts/docker-disk-smoke.mjs xiazai-test

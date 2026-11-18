@@ -21,6 +21,10 @@ try {
   const after=await(await fetch(base+'/api/admin/storage',{headers})).json(); assert.equal(after.stats.disk.uploadAllowed,true);assert.equal(after.stats.totalTransfers,1);
   assert.equal(await(await fetch(`${base}/api/transfers/${kept.id}/files/${kept.files[0].id}`)).text(),'keep this previous file');
   const retry=new FormData();retry.append('files',new Blob(['space recovered']),'retry.txt');assert.equal((await fetch(base+'/api/upload',{method:'POST',headers,body:retry})).status,201);
+  const session=await(await fetch(base+'/api/uploads',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({files:[{name:'chunk-disk.bin',size:20*1024**2}]})})).json();assert.ok(session.id);
+  let cutoff=false;
+  for(let offset=0;offset<20*1024**2;){const result=await fetch(`${base}/api/uploads/${session.id}/files/${session.files[0].id}`,{method:'PUT',headers:{...headers,Authorization:`Upload ${session.token}`,'Content-Type':'application/octet-stream','Upload-Offset':String(offset)},body:Buffer.alloc(4*1024**2)});if(result.status===507){cutoff=true;await result.text();break;}assert.equal(result.status,200);offset=(await result.json()).offset;}
+  assert.ok(cutoff);assert.equal((await fetch(`${base}/api/uploads/${session.id}`,{headers:{...headers,Authorization:`Upload ${session.token}`}})).status,404);
   console.log('Disk Docker smoke passed: real 16 MB filesystem, no file quota, streaming 95% cutoff, cleanup, preserved previous files and resumed upload.');
 }catch(error){try{console.error(docker('logs',name));}catch{}throw error;}
 finally{try{docker('rm','-f',name);}catch{}}

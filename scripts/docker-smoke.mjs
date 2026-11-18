@@ -30,6 +30,10 @@ try {
   assert.equal((await fetch(base+'/api/health')).status,200);
   const login=await fetch(base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'admin',password:'docker-smoke-password'})}); assert.equal(login.status,200);
   const cookie=login.headers.get('set-cookie').split(';')[0];
+  const sessionResponse=await fetch(base+'/api/uploads',{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie},body:JSON.stringify({files:[{name:'large-resumable.bin',size:101*1024**2+23}],hours:24})});assert.equal(sessionResponse.status,201);const session=await sessionResponse.json();
+  const uploadHeaders={Authorization:`Upload ${session.token}`,Cookie:cookie,'Content-Type':'application/octet-stream'};
+  const put=(offset,bytes)=>fetch(`${base}/api/uploads/${session.id}/files/${session.files[0].id}`,{method:'PUT',headers:{...uploadHeaders,'Upload-Offset':String(offset)},body:bytes});
+  const chunk=Buffer.alloc(4*1024**2,3);const firstChunk=await put(0,chunk);assert.equal(firstChunk.status,200);assert.equal((await firstChunk.json()).offset,chunk.length);
   const body=new FormData(); body.append('files',new Blob(['Docker persistence smoke']),'docker.txt');
   const response=await fetch(base+'/api/upload',{method:'POST',body,headers:{Cookie:cookie}}); assert.equal(response.status,201); const transfer=await response.json();
   for (const zipCrypto of [true,false]) {
@@ -45,6 +49,10 @@ try {
   for(let attempt=0;attempt<30;attempt++) {try {if((await fetch(base+'/api/health')).ok)break;}catch{} await sleep(1000);}
   assert.equal(await (await fetch(`${base}/api/transfers/${transfer.id}/files/${transfer.files[0].id}`)).text(),'Docker persistence smoke');
   assert.equal((await fetch(base+'/api/history',{headers:{Cookie:cookie}})).status,200);
+  const resumed=await(await fetch(`${base}/api/uploads/${session.id}`,{headers:{Authorization:`Upload ${session.token}`,Cookie:cookie}})).json();assert.equal(resumed.files[0].offset,chunk.length);
+  for(let offset=resumed.files[0].offset;offset<session.files[0].size;){const result=await put(offset,chunk.subarray(0,Math.min(chunk.length,session.files[0].size-offset)));assert.equal(result.status,200);offset=(await result.json()).offset;}
+  const completed=await fetch(`${base}/api/uploads/${session.id}/complete`,{method:'POST',headers:{Authorization:`Upload ${session.token}`,Cookie:cookie}});assert.equal(completed.status,200);const large=(await completed.json()).transfer;
+  const range=await fetch(`${base}/api/transfers/${large.id}/files/${large.files[0].id}`,{headers:{Range:`bytes=${large.totalSize-23}-`}});assert.equal(range.status,206);assert.deepEqual(Buffer.from(await range.arrayBuffer()),Buffer.alloc(23,3));
   docker('stop',name);
   execFileSync('docker',['run','--rm','-i',...userArgs,'-e','DATA_DIR=/data','-v',`${root}:/data`,image,'node','scripts/bootstrap-admin.mjs'],{input:JSON.stringify({username:'admin',password:'reset-smoke-password',reset:true}),encoding:'utf8'});
   docker('start',name);

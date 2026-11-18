@@ -1,6 +1,6 @@
 {
   "name": "xiazai",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "private": true,
   "type": "module",
   "description": "Self-hosted temporary file sharing with Docker and online updates",
@@ -12,7 +12,8 @@
     "dev": "node --watch server/index.mjs",
     "build": "node scripts/build.mjs",
     "test": "node --test test/*.test.mjs",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:resumable": "node scripts/resumable-smoke.mjs"
   },
   "dependencies": {
     "@zip.js/zip.js": "^2.24.0",
