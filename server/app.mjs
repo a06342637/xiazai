@@ -296,8 +296,11 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
       res.status(202).json(result);
     } finally { maintenance = false; }
   });
-  app.use(express.static(publicDir, { index: false, maxAge: 0 }));
-  app.get(['/', '/s/:id'], (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
+  // Page markup and executable assets must update together after container replacement.
+  app.use(express.static(publicDir, { index: false, maxAge: 0, setHeaders: (res, filename) => {
+    if (/\.(?:html|js|css)$/.test(filename)) res.set('Cache-Control', 'no-store');
+  } }));
+  app.get(['/', '/s/:id'], (req, res) => res.sendFile(path.join(publicDir, 'index.html'), { headers: { 'Cache-Control': 'no-store' } }));
   app.use((req, res) => res.status(404).json({ error: '页面不存在' }));
   app.use((error, req, res, next) => {
     req.releaseZip?.();

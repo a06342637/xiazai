@@ -110,23 +110,24 @@ function upload(files) {
   document.body.dataset.view = 'upload';
   $('#progress-title').textContent = '正在上传…'; $('#progress-detail').textContent = `${files.length} 个文件 · ${bytes(total)} · 请保持页面打开`;
   $('#progress-fill').style.width = '0%'; $('#progress-percent').textContent = '0%';
+  $('#upload-progress [role="progressbar"]').setAttribute('aria-valuenow',0);
   $('#pause-upload').textContent = '暂停上传';
   const client = new ResumableClient(files, expiryHours, user?.id, {
     ready: async transfer => {
       if(request!==client || !transfer)return;
       const url = shareUrl(transfer), fresh = $('#share-url').value !== url;
-      $('#result-title').textContent = '链接已生成，文件上传中';
-      $('#result-description').textContent = '现在即可分享链接，对方可查看进度，上传完成后自动开放下载。';
+      $('#result-title').textContent = '链接已生成';
+      $('#result-description').textContent = '现在即可复制分享，文件会继续上传。';
       $('#share-link').hidden = false; $('#result-actions').hidden = false;
       $('#share-url').value = url; $('#open-share').href = `/s/${transfer.id}`;
       $('#progress-detail').textContent = `${transfer.files.length} 个文件 · ${bytes(transfer.totalSize)} · 请保持页面打开`;
       $('#result-expiry').textContent = permanentTransfer(transfer) ? '上传完成后永久保留' : `上传完成后保留 ${hoursText(client.hours)}`;
       if(fresh) {const done = await copy(url, true);if(request===client)$('#copy-label').textContent = done ? '已复制' : '复制链接';}
     },
-    progress: (loaded,total) => { const progress=total?Math.min(100,Math.floor(loaded/total*100)):100;$('#progress-fill').style.width=`${progress}%`;$('#progress-percent').textContent=`${progress}%`; },
-    message: text => $('#progress-title').textContent=text,
+    progress: (loaded,total) => {if(request!==client)return;const progress=total?Math.min(100,Math.floor(loaded/total*100)):100;$('#progress-fill').style.width=`${progress}%`;$('#progress-percent').textContent=`${progress}%`;$('#upload-progress [role="progressbar"]').setAttribute('aria-valuenow',progress);},
+    message: text => {if(request===client)$('#progress-title').textContent=text;},
     paused: () => {if(request!==client)return;$('#result-title').textContent='上传已暂停';$('#progress-title').textContent='上传已暂停，进度已保留';$('#pause-upload').textContent='继续上传';$('#progress-detail').textContent='点击继续；刷新页面后重新选择原文件也可恢复。';},
-    error: error => {if(request!==client)return;if([404,410,507].includes(error.status)){resetUpload();toast(error.message);return;}$('#progress-title').textContent='上传中断，已保存断点';$('#progress-detail').textContent=error.message;$('#pause-upload').textContent='继续上传';toast('进度已保留，可继续上传');},
+    error: error => {if(request!==client)return;if([404,410,507].includes(error.status)){resetUpload();toast(error.message);return;}$('#result-title').textContent='上传已中断';$('#progress-title').textContent='上传中断，已保存断点';$('#progress-detail').textContent=error.message;$('#pause-upload').textContent='继续上传';toast('进度已保留，可继续上传');},
     complete: async transfer => {
     if(request!==client)return;
     request = null;
@@ -470,7 +471,7 @@ function renderUpdate(state) {
 function startPolling() {
   clearInterval(updatePoll); let failures = 0;
   updatePoll = setInterval(async () => {
-    try { const state = await api('/api/admin/update'); failures = 0; renderUpdate(state); if (['success','failed','rolled_back'].includes(state.phase)) { clearInterval(updatePoll); updatePoll = null; if(state.phase==='success') toast('系统升级完成'); } }
+    try { const state = await api('/api/admin/update'); failures = 0; renderUpdate(state); if (['success','failed','rolled_back'].includes(state.phase)) { clearInterval(updatePoll); updatePoll = null; if(state.phase==='success') {toast(request ? '系统升级完成，上传任务结束后刷新页面加载新版' : '系统升级完成，正在刷新页面…');if(!request)setTimeout(()=>{if(!request)location.reload();},1000);} } }
     catch { failures++; if ($('#update-message')) $('#update-message').textContent = failures < 60?'服务正在重启，自动等待恢复…':'暂时无法连接，请稍后重新打开设置查看结果。'; if(failures>=60) clearInterval(updatePoll); }
   }, 3000);
 }

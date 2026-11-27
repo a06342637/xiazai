@@ -7,10 +7,10 @@
   <meta name="description" content="拖入文件，即刻分享。简单、轻盈的临时文件传输。">
   <title>临时下载 · 让文件轻松抵达</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/styles.css">
-  <script src="/vendor/qrcode.js" defer></script>
-  <script src="/resumable.js" defer></script>
-  <script src="/app.js" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=1.0.11">
+  <script src="/vendor/qrcode.js?v=1.0.11" defer></script>
+  <script src="/resumable.js?v=1.0.11" defer></script>
+  <script src="/app.js?v=1.0.11" defer></script>
 </head>
 <body data-view="upload">
   <div id="modal-shade" aria-hidden="true" hidden></div>
@@ -43,13 +43,13 @@
         <div class="success-icon" id="result-icon"><span data-icon="check"></span></div><h2 id="result-title">文件准备好了</h2><p id="result-description"></p>
         <div class="share-link" id="share-link"><input id="share-url" readonly aria-label="文件分享链接"><div class="share-link-actions"><button class="secondary-button qr-button" id="share-qr" aria-label="显示分享链接二维码" title="分享二维码"><span data-icon="qr"></span></button><button class="primary-button" id="copy-link"><span data-icon="copy"></span><span id="copy-label">复制链接</span></button></div></div>
         <div class="result-meta"><span data-icon="clock"></span><span id="result-expiry"></span></div>
-        <div class="upload-progress" id="upload-progress" hidden aria-live="polite">
-          <h2 id="progress-title">正在上传…</h2><p id="progress-detail">请保持页面打开</p>
-          <div class="progress-track"><div id="progress-fill"></div></div>
-          <div class="progress-footer"><span id="progress-percent">0%</span><div><button class="text-button" id="pause-upload">暂停上传</button><button class="text-button" id="cancel-upload">取消上传</button></div></div>
-        </div>
         <div class="result-actions" id="result-actions"><a id="open-share" class="secondary-button" target="_blank" rel="noopener">查看文件<span data-icon="arrow"></span></a><button id="send-more" class="secondary-button">继续发送<span data-icon="plus"></span></button></div>
         <div class="file-list result-file-list" id="result-file-list"></div>
+      </div>
+      <div class="upload-progress" id="upload-progress" hidden aria-live="polite">
+        <h2 id="progress-title">正在上传…</h2><p id="progress-detail">请保持页面打开</p>
+        <div class="progress-track" role="progressbar" aria-label="文件上传进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress-fill"></div></div>
+        <div class="progress-footer"><span id="progress-percent">0%</span><div><button class="text-button" id="pause-upload">暂停上传</button><button class="text-button" id="cancel-upload">取消上传</button></div></div>
       </div>
       <div class="upload-options" id="upload-options"><div class="option-label"><span data-icon="clock"></span><span>文件保留</span></div><div class="expiry-options" id="expiry-options"></div><span class="option-note">到期自动失效</span></div>
       <div class="panel-footnote"><span data-icon="lock"></span><span id="panel-note">链接先生成，文件继续上传，请保持页面打开</span></div>
@@ -63,7 +63,7 @@
     </section>
     <div class="quiet-note" id="quiet-note">少一点繁琐，多一点自由。<span class="note-line"></span>让分享回归简单。</div>
   </main>
-  <footer><span><a href="https://github.com/a06342637/xiazai" target="_blank" rel="noopener"><span class="footer-brand">XIAZAI</span></a><span class="version" id="footer-version">v1.0.10</span></span><span class="footer-right"><span class="status-dot"></span>由你托管，为你而用</span></footer>
+  <footer><span><a href="https://github.com/a06342637/xiazai" target="_blank" rel="noopener"><span class="footer-brand">XIAZAI</span></a><span class="version" id="footer-version">v1.0.11</span></span><span class="footer-right"><span class="status-dot"></span>由你托管，为你而用</span></footer>
   <dialog id="auth-dialog" class="modal auth-modal" aria-labelledby="auth-title">
     <button class="close-button" data-close="auth-dialog" aria-label="关闭登录窗口"><span data-icon="close"></span></button>
     <div class="modal-mark" data-icon="user"></div><h2 id="auth-title">欢迎回来</h2><p class="modal-description" id="auth-description">登录，管理你分享过的文件。</p>

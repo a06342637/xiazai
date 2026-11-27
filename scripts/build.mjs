@@ -10,6 +10,10 @@ for (const folder of ['server','updater','public','scripts']) {
   }
 }
 const pkg = JSON.parse(await readFile('package.json','utf8'));
+const page = await readFile('public/index.html','utf8');
+for (const asset of ['/styles.css','/vendor/qrcode.js','/resumable.js','/app.js']) {
+  if (!page.includes(`${asset}?v=${pkg.version}"`)) throw new Error(`${asset} 页面资源版本与 package.json 不一致`);
+}
 for(const file of ['Dockerfile','compose.yml','.env.example','install.sh','reset-admin.sh','README.md']) await access(file);
 const compose = await readFile('compose.yml','utf8');
 if(!compose.includes(`xiazai:${pkg.version}`)) throw new Error('compose.yml 默认版本与 package.json 不一致');

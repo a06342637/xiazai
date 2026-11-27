@@ -18,6 +18,11 @@ try {
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1366, height: 768 }, permissions: ['clipboard-read', 'clipboard-write'] });
   const page = await context.newPage(), errors = []; page.on('pageerror', error => errors.push(error.message));
+  // A proxy with an old unversioned script must not mix it into the new page.
+  await page.route('**/app.js*', async route => {
+    if (!new URL(route.request().url()).searchParams.has('v')) return route.fulfill({contentType:'text/javascript',body:'throw new Error("stale unversioned app script");'});
+    await route.continue();
+  });
   await page.goto(base); await page.getByText('大小、数量不限', { exact: false }).waitFor();
   let lostCreation=false;
   await page.route('**/api/uploads',async route=>{if(lostCreation)return route.continue();lostCreation=true;await route.fetch();await route.abort('connectionreset');});
@@ -31,7 +36,7 @@ try {
     await route.continue();
   });
   await page.locator('#file-input').setInputFiles(file);
-  await page.getByText('链接已生成，文件上传中', { exact: true }).waitFor();
+  await page.getByText('链接已生成', { exact: true }).waitFor();
   const earlyShare = await page.getByLabel('文件分享链接').inputValue(); assert.ok(earlyShare.startsWith(base + '/s/'));
   await page.waitForFunction(url => document.querySelector('#copy-label').textContent === '已复制', earlyShare);
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), earlyShare);
@@ -42,11 +47,32 @@ try {
   await receiver.getByText('large-original.bin', {exact: true}).waitFor();
   const pending = await (await context.request.get(earlyShare.replace('/s/', '/api/transfers/'))).json();
   assert.equal(pending.uploadedSize, 0); assert.equal(pending.uploading, true);
+  const assertUploadVisible = async () => {
+    for (const selector of ['#share-url','#copy-link','#share-qr','#upload-progress','#progress-percent','#pause-upload','#cancel-upload']) {
+      assert.ok(await page.locator(selector).isVisible(),`${selector} must remain visible during upload`);
+    }
+    const bar = await page.getByRole('progressbar',{name:'文件上传进度'}).boundingBox();
+    const link = await page.locator('#share-url').boundingBox();
+    assert.ok(bar.width > 100 && bar.height > 0);assert.ok(link.y + link.height < bar.y,'Show the share link above the existing progress bar');
+    assert.ok(await page.locator('.progress-footer').evaluate(el=>el.getBoundingClientRect().bottom <= innerHeight),'The link and upload controls must fit together in the viewport');
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),'Upload panel must not overflow horizontally');
+  };
+  for (const viewport of [{width:1366,height:768},{width:960,height:600},{width:390,height:844}]) {
+    await page.setViewportSize(viewport); await assertUploadVisible();
+    await page.screenshot({path:path.join(artifacts,`early-share-${viewport.width}.png`),fullPage:true});
+  }
+  await page.setViewportSize({width:1366,height:768});
+  await page.getByRole('button',{name:'显示分享链接二维码'}).click();
+  await page.getByRole('dialog',{name:'扫码查看文件'}).waitFor();
+  assert.equal(await page.locator('#qr-url').inputValue(),earlyShare);
+  await page.getByRole('button',{name:'关闭二维码'}).click();
   await page.screenshot({path: path.join(artifacts, 'early-share-upload.png'), fullPage: true});
   releaseFirst();
   await page.waitForFunction(() => document.querySelector('#progress-percent').textContent !== '0%');
   await page.getByRole('button', { name: '暂停上传', exact: true }).click();
   await page.getByText('上传已暂停，进度已保留', { exact: true }).waitFor();
+  await assertUploadVisible();assert.equal(await page.locator('#share-url').inputValue(),earlyShare);
+  assert.equal(await page.getByRole('progressbar',{name:'文件上传进度'}).getAttribute('aria-valuenow'),(await page.locator('#progress-percent').textContent()).replace('%',''));
   const receipt = await page.evaluate(() => JSON.parse(localStorage.getItem('xiazai-resumable-v1'))[0]); assert.ok(receipt.id && receipt.token);
   for (let i = 0; i < 100 && runtime.activeUploads; i++) await new Promise(r => setTimeout(r, 10));
   const status = await (await context.request.get(`${base}/api/uploads/${receipt.id}`, { headers: { Authorization: `Upload ${receipt.token}` } })).json();
@@ -59,6 +85,7 @@ try {
   assert.ok(rejected && interrupted && lostCreation); assert.equal(runtime.store.transfers.size, 1);assert.equal(runtime.uploads.sessions.size,1);
   const share = await page.getByLabel('文件分享链接').inputValue(), transfer = await (await context.request.get(share.replace('/s/', '/api/transfers/'))).json();
   assert.equal(share, earlyShare); assert.equal(transfer.totalSize, size); assert.equal(transfer.files[0].name, 'large-original.bin');
+  assert.equal(await page.locator('#upload-progress').isVisible(),false);
   await receiver.getByRole('link', {name: '打包下载'}).waitFor();
   assert.equal(await receiver.getByRole('heading', {name: '文件正在上传', exact: true}).count(), 0);
   await receiver.close();

@@ -41,6 +41,21 @@ async function archiveBuffer(entries) {
   await archive.finalize(); await complete; return Buffer.concat(chunks);
 }
 
+test('page and executable assets bypass stale caches and use the running version',async t => {
+  const f = await fixture(t), version = (await (await f.request('/api/config')).json()).version;
+  for (const route of ['/', '/s/pending-share', '/index.html']) {
+    const response = await f.request(route);
+    assert.equal(response.status,200); assert.equal(response.headers.get('cache-control'),'no-store');
+    const html = await response.text();
+    for (const asset of ['/styles.css','/vendor/qrcode.js','/resumable.js','/app.js']) {
+      assert.ok(html.includes(`${asset}?v=${version}"`));
+      const resource = await f.request(`${asset}?v=${version}`);
+      assert.equal(resource.status,200); assert.equal(resource.headers.get('cache-control'),'no-store');
+      await resource.body.cancel();
+    }
+  }
+});
+
 test('public upload, unicode filename, binary download, preview, ZIP bundle and anonymous metadata privacy',async t => {
   const f = await fixture(t), admin = await f.login();
   const response = await f.upload([['你好.txt','<script>not executable</script>'],['photo.png',Buffer.from([0,1,2,255])]],admin);
