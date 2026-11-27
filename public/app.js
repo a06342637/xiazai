@@ -58,7 +58,7 @@ function syncModals() {
 function showDialog(name) { const dialog = $(`#${name}`); if (!dialog.open) dialog.showModal(); syncModals(); }
 function clearPreview() { previewRevision++; cancelMediaLoad(); clearPreviewMedia(); galleryLayout = null; currentGallery = null; $('#preview-content').replaceChildren(); currentZip = null; }
 function closeDialog(name) { if(name === 'preview-dialog')clearPreview(); $(`#${name}`).close(); syncModals(); }
-function updateUser(next) { user = next; $('#account-label').textContent = user ? user.username : '登录 / 注册'; $('#panel-note').textContent = user ? '上传完成后自动复制链接，并保存到我的文件' : '上传完成后自动生成链接，并复制到剪贴板'; }
+function updateUser(next) { user = next; $('#account-label').textContent = user ? user.username : '登录 / 注册'; $('#panel-note').textContent = user ? '链接先生成，上传完成后保存到我的文件' : '链接先生成，文件继续上传，请保持页面打开'; }
 function applyConfig(next) {
   config = next; document.title = `${config.siteName} · 让文件轻松抵达`;
   document.querySelectorAll('.site-name').forEach(el => el.textContent = config.siteName);
@@ -71,7 +71,7 @@ function applyConfig(next) {
   $('#expiry-options').querySelectorAll('button').forEach(button => button.onclick = () => { expiryHours = button.dataset.hours === 'permanent' ? 'permanent' : Number(button.dataset.hours); $('#expiry-options .active')?.classList.remove('active'); button.classList.add('active'); $('.option-note').textContent = expiryHours === 'permanent' ? '保留至手动删除' : '到期自动失效'; });
 }
 function setTheme(theme) { document.documentElement.dataset.theme = theme; try { localStorage.setItem('xiazai-theme', theme); } catch {} $('#theme-button').innerHTML = icon(theme === 'dark' ? 'moon' : 'sun'); }
-function resetUpload() { $('#dropzone').hidden = false; $('#upload-progress').hidden = true; $('#share-result').hidden = true; $('#upload-options').hidden = false; fileLists.delete($('#result-file-list')); $('#result-file-list').replaceChildren(); $('#copy-label').textContent = '复制链接'; $('#file-input').value = ''; request = null; }
+function resetUpload() { $('#dropzone').hidden = false; $('#upload-progress').hidden = true; $('#share-result').hidden = true; $('#upload-options').hidden = false; fileLists.delete($('#result-file-list')); $('#result-file-list').replaceChildren(); $('#share-url').value = ''; $('#copy-label').textContent = '复制链接'; $('#file-input').value = ''; request = null; }
 async function copy(text, automatic = false) {
   try {
     if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
@@ -79,7 +79,7 @@ async function copy(text, automatic = false) {
       const field = document.createElement('textarea'); field.value = text; field.className = 'clipboard-helper'; document.body.append(field); field.select();
       const done = document.execCommand('copy'); field.remove(); if (!done) throw new Error();
     }
-    toast(automatic ? '上传成功，分享链接已复制' : '链接已复制'); return true;
+    toast(automatic ? '分享链接已复制' : '链接已复制'); return true;
   } catch { if (!automatic) toast('请长按或选中链接复制'); return false; }
 }
 function shareUrl(transfer) { return `${config.publicUrl || location.origin}/s/${transfer.id}`; }
@@ -102,22 +102,38 @@ function showQr(url, filename, download = false) {
 function upload(files) {
   if (!config || request || !files.length) return;
   const total = [...files].reduce((n,f) => n + f.size, 0);
-  $('#share-result').hidden = true; $('#copy-label').textContent = '复制链接';
+  $('#share-result').hidden = false; $('#copy-label').textContent = '复制链接';
+  $('#result-title').textContent = '正在准备分享链接…'; $('#result-description').textContent = '链接生成后即可分享，文件会继续上传。';
+  $('#result-icon').innerHTML = icon('upload'); $('#result-expiry').textContent = '';
+  $('#share-link').hidden = true; $('#result-actions').hidden = true; $('#send-more').hidden = true;
   $('#dropzone').hidden = true; $('#upload-progress').hidden = false; $('#upload-options').hidden = true;
   document.body.dataset.view = 'upload';
   $('#progress-title').textContent = '正在上传…'; $('#progress-detail').textContent = `${files.length} 个文件 · ${bytes(total)} · 请保持页面打开`;
   $('#progress-fill').style.width = '0%'; $('#progress-percent').textContent = '0%';
   $('#pause-upload').textContent = '暂停上传';
   const client = new ResumableClient(files, expiryHours, user?.id, {
+    ready: async transfer => {
+      if(request!==client || !transfer)return;
+      const url = shareUrl(transfer), fresh = $('#share-url').value !== url;
+      $('#result-title').textContent = '链接已生成，文件上传中';
+      $('#result-description').textContent = '现在即可分享链接，对方可查看进度，上传完成后自动开放下载。';
+      $('#share-link').hidden = false; $('#result-actions').hidden = false;
+      $('#share-url').value = url; $('#open-share').href = `/s/${transfer.id}`;
+      $('#progress-detail').textContent = `${transfer.files.length} 个文件 · ${bytes(transfer.totalSize)} · 请保持页面打开`;
+      $('#result-expiry').textContent = permanentTransfer(transfer) ? '上传完成后永久保留' : `上传完成后保留 ${hoursText(client.hours)}`;
+      if(fresh) {const done = await copy(url, true);if(request===client)$('#copy-label').textContent = done ? '已复制' : '复制链接';}
+    },
     progress: (loaded,total) => { const progress=total?Math.min(100,Math.floor(loaded/total*100)):100;$('#progress-fill').style.width=`${progress}%`;$('#progress-percent').textContent=`${progress}%`; },
     message: text => $('#progress-title').textContent=text,
-    paused: () => {if(request!==client)return;$('#progress-title').textContent='上传已暂停，进度已保留';$('#pause-upload').textContent='继续上传';$('#progress-detail').textContent='点击继续；刷新页面后重新选择原文件也可恢复。';},
+    paused: () => {if(request!==client)return;$('#result-title').textContent='上传已暂停';$('#progress-title').textContent='上传已暂停，进度已保留';$('#pause-upload').textContent='继续上传';$('#progress-detail').textContent='点击继续；刷新页面后重新选择原文件也可恢复。';},
     error: error => {if(request!==client)return;if([404,410,507].includes(error.status)){resetUpload();toast(error.message);return;}$('#progress-title').textContent='上传中断，已保存断点';$('#progress-detail').textContent=error.message;$('#pause-upload').textContent='继续上传';toast('进度已保留，可继续上传');},
     complete: async transfer => {
     if(request!==client)return;
     request = null;
     const url = shareUrl(transfer);
     $('#upload-progress').hidden = true; $('#share-result').hidden = false;
+    $('#result-title').textContent = '文件准备好了'; $('#result-icon').innerHTML = icon('check');
+    $('#share-link').hidden = false; $('#result-actions').hidden = false; $('#send-more').hidden = false;
     $('#share-url').value = url; $('#open-share').href = `/s/${transfer.id}`;
     $('#result-description').textContent = `${transfer.files.length} 个文件 · ${bytes(transfer.totalSize)}，现在就分享给对方吧。`;
     $('#result-expiry').textContent = permanentTransfer(transfer) ? '永久保留，分享链接持续有效' : `${date(transfer.expiresAt)} 到期，链接自动失效`;
@@ -139,6 +155,7 @@ function fileKind(name) {
 }
 function fileRow(transfer, file) {
   const kind = fileKind(file.name);
+  if (transfer.uploading) return `<div class="file-item"><div class="file-row"><span class="file-icon">${icon(kind)}</span><div class="file-info"><span class="file-name">${escape(file.name)}</span><div class="file-size">${bytes(file.size)} · 等待上传完成</div></div></div></div>`;
   return `<div class="file-item"><div class="file-row"><span class="file-icon">${icon(kind)}</span><button class="file-info file-expand-button" data-expand="${file.id}" aria-label="展开 ${escape(file.name)}" aria-expanded="false"><span class="file-name">${escape(file.name)}</span><span class="file-size">${bytes(file.size)} · 点击展开</span></button><div class="file-actions">${kind !== 'file' ? `<button data-preview="${file.id}" aria-label="预览 ${escape(file.name)}" title="${kind === 'zip' ? '查看压缩包':'预览'}">${icon('eye')}</button>`:''}<button data-file-qr="${file.id}" aria-label="显示 ${escape(file.name)} 下载二维码" title="下载二维码">${icon('qr')}</button><a href="/api/transfers/${transfer.id}/files/${file.id}" aria-label="下载 ${escape(file.name)}" title="下载">${icon('download')}</a><button class="direct-link-button" data-direct="${file.id}" aria-label="复制 ${escape(file.name)} 下载直链" title="复制下载直链">直链</button></div></div><div class="inline-preview" hidden></div></div>`;
 }
 function listPageSize() { return innerWidth <= 560 ? 4 : Math.max(4, Math.min(8, Math.floor((innerHeight - 400) / 54))); }
@@ -182,14 +199,36 @@ function setView(view) {
 }
 async function renderShare(id) {
   setView('download'); $('#hero h1').innerHTML = '文件已抵达，<span>请查收。</span>'; $('#hero>p').textContent = '先预览，再下载。无需登录，打开即用。';
-  const panel = $('#download-panel'); for(const container of fileLists.keys())if(panel.contains(container))fileLists.delete(container);panel.innerHTML = '<div class="empty-state"><p>正在获取文件…</p></div>';
+  const panel = $('#download-panel');
+  const clearLists = () => {for(const container of fileLists.keys())if(panel.contains(container))fileLists.delete(container);};
+  clearLists(); panel.innerHTML = '<div class="empty-state"><p>正在获取文件…</p></div>';
   const revision = viewRevision;
-  try {
+  const refresh = async () => {try {
     const transfer = await api(`/api/transfers/${encodeURIComponent(id)}`);
     if (revision !== viewRevision) return;
+    if (transfer.uploading) {
+      $('#hero h1').innerHTML = '文件正在上传，<span>稍候即可查收。</span>'; $('#hero>p').textContent = '此链接已生效，上传完成后自动开放下载。';
+      const progress = transfer.totalSize ? Math.min(100, Math.floor(transfer.uploadedSize / transfer.totalSize * 100)) : 0;
+      if (!panel.querySelector('.pending-share')) {
+        clearLists();
+        panel.innerHTML = `<div class="download-head"><div><h2>你收到 ${transfer.files.length} 个文件</h2><p>总大小 ${bytes(transfer.totalSize)}</p></div></div><div class="pending-share"><h3>文件正在上传</h3><p class="pending-progress"></p><div class="progress-track"><div></div></div><p>请等待发送者上传完成，此页面会自动更新。</p></div><div class="file-list"></div>`;
+        renderFileList(panel.querySelector('.file-list'), transfer);
+      }
+      panel.querySelector('.pending-progress').textContent = `已上传 ${bytes(transfer.uploadedSize)} / ${bytes(transfer.totalSize)} · ${progress}%`;
+      panel.querySelector('.pending-share .progress-track>div').style.width = `${progress}%`;
+      setTimeout(() => {if(revision === viewRevision)refresh();}, 2000); return;
+    }
+    $('#hero h1').innerHTML = '文件已抵达，<span>请查收。</span>'; $('#hero>p').textContent = '先预览，再下载。无需登录，打开即用。';
+    clearLists();
     panel.innerHTML = `<div class="download-head"><div><h2>你收到 ${transfer.files.length} 个文件</h2><p>总大小 ${bytes(transfer.totalSize)} · ${date(transfer.createdAt)} 分享</p></div><a class="primary-button" href="/api/transfers/${transfer.id}/zip">${icon('download')}打包下载</a></div><div class="file-list">${transfer.files.map(file => fileRow(transfer,file)).join('')}</div><div class="download-foot"><span>${icon('clock')}${expiryText(transfer)}</span><a href="/" class="text-button">我也要发送文件 →</a></div>`;
     const list = panel.querySelector('.file-list'); renderFileList(list, transfer);
-  } catch (error) { if(revision === viewRevision) panel.innerHTML = `<div class="empty-state"><div class="success-icon">${icon('clock')}</div><h2>这份分享已经离开了</h2><p>${escape(error.message)}<br>请联系发送者重新上传。</p><a class="primary-button" href="/">返回首页</a></div>`; }
+  } catch (error) {
+    if(revision !== viewRevision)return;
+    clearLists();
+    if(![404,410].includes(error.status)) {panel.innerHTML = `<div class="empty-state"><p>${escape(error.message)}<br>正在重新连接…</p></div>`;setTimeout(() => {if(revision === viewRevision)refresh();}, 2000);return;}
+    panel.innerHTML = `<div class="empty-state"><div class="success-icon">${icon('clock')}</div><h2>这份分享已经离开了</h2><p>${escape(error.message)}<br>请联系发送者重新上传。</p><a class="primary-button" href="/">返回首页</a></div>`;
+  }};
+  await refresh();
 }
 function mediaGallery(files, selectedId, baseFor, headers) {
   const items = files.filter(file => ['image','video'].includes(fileKind(file.name))).map(file => ({ name: file.name, url: baseFor(file), headers, id: file.id ?? file.index }));

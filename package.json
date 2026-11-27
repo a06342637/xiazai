@@ -1,6 +1,6 @@
 {
   "name": "xiazai",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "private": true,
   "type": "module",
   "description": "Self-hosted temporary file sharing with Docker and online updates",

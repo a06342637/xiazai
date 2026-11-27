@@ -28,25 +28,16 @@ export async function readJson(filename, fallback) {
   catch (error) { if (error.code === 'ENOENT') return fallback; throw error; }
 }
 
-export function safeName(name) {
+export function safeName(name, decodeMultipart = true) {
   // Multipart filenames are commonly sent as UTF-8 interpreted as latin1.
-  const decoded = /^[\x00-\xff]*$/.test(name) ? Buffer.from(name, 'latin1').toString('utf8') : name;
+  const decoded = decodeMultipart && /^[\x00-\xff]*$/.test(name) ? Buffer.from(name, 'latin1').toString('utf8') : name;
   const text = decoded.includes('\uFFFD') ? name : decoded;
   const filename = Array.from(text.replaceAll('\\', '/').split('/').pop().replace(/[\x00-\x1f\x7f]/g, '')).slice(0, 240).join('');
   return !filename || filename === '.' || filename === '..' ? 'unnamed' : filename;
 }
 
-export function datedFiles(files, timestamp) {
-  const parts = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(timestamp));
-  const value = key => parts.find(p=>p.type===key).value;
-  const date = `${value('year')}-${value('month')}-${value('day')}`, counts = new Map();
-  return files.map(file => {
-    const originalName = file.name, ext = path.extname(originalName).toLowerCase();
-    const validExtension = /^\.[a-z0-9]{1,16}$/.test(ext) ? ext : '';
-    const type = validExtension.slice(1) || 'file', number = (counts.get(type) || 0) + 1;
-    counts.set(type, number);
-    return {...file, originalName, name:`${date}_${type}${/\d$/.test(type)?'_':''}${number}${validExtension}`};
-  });
+export function originalFiles(files) {
+  return files.map(file => ({ ...file, originalName: file.name }));
 }
 
 export function httpError(status, message) { return Object.assign(new Error(message), { status }); }

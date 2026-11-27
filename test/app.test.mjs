@@ -45,11 +45,11 @@ test('public upload, unicode filename, binary download, preview, ZIP bundle and 
   const f = await fixture(t), admin = await f.login();
   const response = await f.upload([['你好.txt','<script>not executable</script>'],['photo.png',Buffer.from([0,1,2,255])]],admin);
   assert.equal(response.status,201); const transfer = await response.json();
-  assert.ok(validId(transfer.id)); assert.equal(transfer.files[0].originalName,'你好.txt'); assert.match(transfer.files[0].name,/^\d{4}-\d{2}-\d{2}_txt1\.txt$/); assert.equal(transfer.ownerId,undefined);
+  assert.ok(validId(transfer.id)); assert.equal(transfer.files[0].originalName,'你好.txt'); assert.equal(transfer.files[0].name,'你好.txt'); assert.equal(transfer.ownerId,undefined);
   const shared = await (await f.request(`/api/transfers/${transfer.id}`)).json(); assert.equal(shared.ownerId,undefined);
   const download = await f.request(`/api/transfers/${transfer.id}/files/${transfer.files[0].id}`);
   assert.equal(await download.text(),'<script>not executable</script>'); assert.match(download.headers.get('content-disposition'),/attachment/);
-  assert.ok(download.headers.get('content-disposition').includes(transfer.files[0].name));
+  assert.ok(download.headers.get('content-disposition').includes(encodeURIComponent(transfer.files[0].name)));
   const text = await f.request(`/api/transfers/${transfer.id}/files/${transfer.files[0].id}/preview`);
   assert.equal((await text.json()).text,'<script>not executable</script>');
   const photo = await f.request(`/api/transfers/${transfer.id}/files/${transfer.files[1].id}/preview`);

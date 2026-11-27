@@ -14,8 +14,7 @@ const artifacts=path.resolve('.verification'); await mkdir(artifacts,{recursive:
 const runtime=await createApp({dataDir:path.join(root,'data'),adminPassword:'smoke-admin-password'});
 const server=runtime.app.listen(0,'127.0.0.1'); await new Promise(resolve=>server.once('listening',resolve));
 const base=`http://127.0.0.1:${server.address().port}`;
-const dateTag = new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
-const displayNames={text:dateTag+'_txt1.txt',image:dateTag+'_png1.png',second:dateTag+'_png2.png',video:dateTag+'_webm1.webm',zip:dateTag+'_zip1.zip',encrypted:dateTag+'_zip2.zip'};
+const displayNames={text:'原始说明.txt',image:'原始图片.png',second:'第二张图片.PNG',video:'录制视频.webm',zip:'项目文件夹.zip',encrypted:'加密资料.zip'};
 let browser;
 try {
   const textFile=path.join(root,`${displayNames.text}`), pngFile=path.join(root,`${displayNames.image}`), secondPng=path.join(root,`${displayNames.second}`), videoFile=path.join(root,`${displayNames.video}`), zipFile=path.join(root,`${displayNames.zip}`), encryptedFile=path.join(root,`${displayNames.encrypted}`);

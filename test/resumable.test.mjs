@@ -30,6 +30,38 @@ async function fixture(t, options = {}) {
   return { root, base, request, create, headers, put, runtime: () => runtime, restart: async () => { await stop(); await start(); }, advance: n => now += n };
 }
 
+test('share links exist before bytes arrive, survive restart and unlock only after completion', async t => {
+  const f = await fixture(t), names = ['项目文件夹.ZIP', 'Ã©.txt', 'Ã©.txt'];
+  const upload = await f.create(names.map(name => ({name, size: 6})), 1);
+  assert.equal(upload.sharePath, `/s/${upload.id}`); assert.equal(upload.transfer.uploading, true);
+  const publicStatus = async () => {
+    const response = await f.request(`/api/transfers/${upload.id}`);
+    assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
+    const shared = await response.json();
+    for (const key of ['ownerId', 'secretHash', 'token', 'hours']) assert.equal(shared[key], undefined);
+    return shared;
+  };
+  assert.equal((await f.request(upload.sharePath)).status, 200);
+  assert.equal((await publicStatus()).uploadedSize, 0);
+  const fileUrl = `/api/transfers/${upload.id}/files/${upload.files[0].id}`;
+  for (const url of [fileUrl, `${fileUrl}/preview`, `/api/transfers/${upload.id}/zip`]) {
+    const response = await f.request(url); assert.equal(response.status, 409); assert.match((await response.json()).error, /仍在上传/);
+  }
+  assert.equal((await f.put(upload, 0, Buffer.from('abc'), 0)).status, 200);
+  assert.equal((await publicStatus()).uploadedSize, 3);
+  await f.restart(); assert.equal((await publicStatus()).uploadedSize, 3);
+  f.advance(3600001); // Retention starts when the upload completes, even for slow uploads.
+  assert.equal((await f.put(upload, 0, Buffer.from('def'), 3)).status, 200);
+  for (const index of [1, 2]) assert.equal((await f.put(upload, index, Buffer.from('abcdef'), 0)).status, 200);
+  assert.equal((await f.request(fileUrl)).status, 409);
+  const response = await f.request(`/api/uploads/${upload.id}/complete`, {method: 'POST', headers: f.headers(upload)});
+  assert.equal(response.status, 200); const {transfer} = await response.json();
+  assert.equal(transfer.sharePath, upload.sharePath); assert.equal(transfer.expiresAt - transfer.createdAt, 3600000);
+  assert.deepEqual(transfer.files.map(file => file.name), names); assert.equal((await publicStatus()).uploading, undefined);
+  const download = await f.request(fileUrl); assert.equal(download.status, 200); assert.equal(await download.text(), 'abcdef');
+  assert.ok(download.headers.get('content-disposition').includes(encodeURIComponent(names[0])));
+});
+
 test('files larger than 100 MB use bounded chunks and exactly match downloaded bytes', async t => {
   const f = await fixture(t), size = 101 * 1024 ** 2 + 137, upload = await f.create([{ name: 'large.bin', size }]);
   const chunk = Buffer.alloc(CHUNK_BYTES, 7), sourceHash = createHash('sha256');
@@ -82,8 +114,10 @@ test('scoped tokens, limits, zero-byte files, cancellation and expiry are enforc
   const cancelled = await f.create([{ name: 'cancel.bin', size: 8 }]); await f.put(cancelled, 0, Buffer.from('part'), 0);
   assert.equal((await f.request(`/api/uploads/${cancelled.id}`, { method: 'DELETE', headers: f.headers(cancelled) })).status, 200);
   assert.equal((await f.request(`/api/uploads/${cancelled.id}`, { headers: f.headers(cancelled) })).status, 404);
+  assert.equal((await f.request(`/api/transfers/${cancelled.id}`)).status, 410);
   const expired = await f.create([{ name: 'expire.bin', size: 8 }]); f.advance(86400001); await f.runtime().uploads.cleanup();
   assert.ok(!(await readdir(path.join(f.root, '.resumable'))).includes(expired.id));
+  assert.equal((await f.request(`/api/transfers/${expired.id}`)).status, 410);
 });
 
 test('95% disk protection deletes incomplete resumable upload without removing previous shares', async t => {

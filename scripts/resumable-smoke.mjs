@@ -22,13 +22,28 @@ try {
   let lostCreation=false;
   await page.route('**/api/uploads',async route=>{if(lostCreation)return route.continue();lostCreation=true;await route.fetch();await route.abort('connectionreset');});
   let sends = [], rejected = false, interrupted = false;
+  let releaseFirst; const firstChunk = new Promise(resolve => releaseFirst = resolve);
   await page.route('**/api/uploads/*/files/*', async route => {
     const offset = Number(route.request().headers()['upload-offset']), body = route.request().postDataBuffer(); sends.push({ offset, size: body.length });
+    if (sends.length === 1) await firstChunk;
     if (!rejected) { rejected = true; return route.fulfill({ status: 413, contentType: 'text/html', body: '<html>proxy upload too large</html>' }); }
     if (offset > 0 && !interrupted) { interrupted = true; return route.abort('connectionreset'); }
     await route.continue();
   });
   await page.locator('#file-input').setInputFiles(file);
+  await page.getByText('链接已生成，文件上传中', { exact: true }).waitFor();
+  const earlyShare = await page.getByLabel('文件分享链接').inputValue(); assert.ok(earlyShare.startsWith(base + '/s/'));
+  await page.waitForFunction(url => document.querySelector('#copy-label').textContent === '已复制', earlyShare);
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), earlyShare);
+  assert.equal(runtime.store.transfers.size, 0);
+  const receiver = await context.newPage(); await receiver.goto(earlyShare);
+  await receiver.getByRole('heading', {name: '文件正在上传', exact: true}).waitFor();
+  assert.equal(await receiver.getByRole('link', {name: '打包下载'}).count(), 0);
+  await receiver.getByText('large-original.bin', {exact: true}).waitFor();
+  const pending = await (await context.request.get(earlyShare.replace('/s/', '/api/transfers/'))).json();
+  assert.equal(pending.uploadedSize, 0); assert.equal(pending.uploading, true);
+  await page.screenshot({path: path.join(artifacts, 'early-share-upload.png'), fullPage: true});
+  releaseFirst();
   await page.waitForFunction(() => document.querySelector('#progress-percent').textContent !== '0%');
   await page.getByRole('button', { name: '暂停上传', exact: true }).click();
   await page.getByText('上传已暂停，进度已保留', { exact: true }).waitFor();
@@ -43,7 +58,10 @@ try {
   assert.ok(sends[before].offset >= confirmed); assert.ok(sends.every(s => s.size <= 4 * 1024 ** 2));
   assert.ok(rejected && interrupted && lostCreation); assert.equal(runtime.store.transfers.size, 1);assert.equal(runtime.uploads.sessions.size,1);
   const share = await page.getByLabel('文件分享链接').inputValue(), transfer = await (await context.request.get(share.replace('/s/', '/api/transfers/'))).json();
-  assert.equal(transfer.totalSize, size); assert.ok(transfer.files[0].name.endsWith('_bin1.bin'));
+  assert.equal(share, earlyShare); assert.equal(transfer.totalSize, size); assert.equal(transfer.files[0].name, 'large-original.bin');
+  await receiver.getByRole('link', {name: '打包下载'}).waitFor();
+  assert.equal(await receiver.getByRole('heading', {name: '文件正在上传', exact: true}).count(), 0);
+  await receiver.close();
   const persisted = await readFile(path.join(root, 'data', 'uploads', transfer.id, transfer.files[0].id)), source = await readFile(file);
   assert.equal(createHash('sha256').update(persisted).digest('hex'), createHash('sha256').update(source).digest('hex'));
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('xiazai-resumable-v1'))), []);
@@ -59,8 +77,10 @@ try {
   let blockChunk; const blocked = new Promise(r => blockChunk = r);
   await page.route('**/api/uploads/*/files/*', async route => { await blocked; try { await route.continue(); } catch {} });
   await page.locator('#file-input').setInputFiles(file); await page.waitForFunction(() => document.querySelector('#progress-title').textContent === '正在分块上传…');
+  const cancelledShare = await page.getByLabel('文件分享链接').inputValue();
   await page.getByRole('button', { name: '取消上传', exact: true }).click(); blockChunk(); await page.getByText('上传已取消，未完成文件已清理', { exact: true }).waitFor();
+  assert.equal((await context.request.get(cancelledShare.replace('/s/', '/api/transfers/'))).status(), 410);
   assert.equal(runtime.uploads.sessions.size, 2); assert.deepEqual(errors, []);
   await page.screenshot({ path: path.join(artifacts, 'resumable-upload.png'), fullPage: true });
-  console.log('Resumable browser smoke passed: >100 MB, proxy 413 chunk reduction, interruption, pause, reload/reselect resume, lost completion response and cancel cleanup.');
+  console.log('Resumable browser smoke passed: early copied share link, receiver progress and automatic downloads, original names, >100 MB, proxy 413 chunk reduction, pause/reload resume, lost responses and cancel cleanup.');
 } finally { await browser?.close(); runtime.close(); server.closeAllConnections(); await new Promise(r => server.close(r)); await rm(root, { recursive: true, force: true }); }

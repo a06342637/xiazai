@@ -3,7 +3,7 @@ import { ZipArchive } from 'archiver';
 import { mkdir, rm, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { id, readJson, MiB, terminal, httpError, datedFiles } from './util.mjs';
+import { id, readJson, MiB, terminal, httpError, originalFiles } from './util.mjs';
 import { Store } from './store.mjs';
 import { parseUpload } from './upload.mjs';
 import { getRelease, newer } from './releases.mjs';
@@ -137,7 +137,7 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
       if (req.aborted || res.destroyed) throw httpError(400, '上传已取消');
       await store.disk.check();
       const createdAt = clock();
-      const files = datedFiles(uploaded, createdAt);
+      const files = originalFiles(uploaded);
       const transfer = { id: transferId, ownerId: req.user?.id || null, files, totalSize: files.reduce((n, f) => n + f.size, 0),
         // A far-future timestamp preserves files even if an older version is restored.
         createdAt, permanent, expiresAt: permanent ? 8640000000000000 : createdAt + hours * 3600000 };
@@ -151,10 +151,18 @@ export async function createApp({ dataDir, adminUsername = 'admin', adminPasswor
   });
   const transferFor = req => {
     const transfer = store.get(req.params.id);
-    if (!transfer) throw httpError(410, '链接已失效，文件可能已过期或不存在');
+    if (!transfer) {
+      if (uploads.pendingShare(req.params.id)) throw httpError(409, '文件仍在上传，请上传完成后再下载');
+      throw httpError(410, '链接已失效，文件可能已过期或不存在');
+    }
     return transfer;
   };
-  app.get('/api/transfers/:id', (req, res) => { const { ownerId, ...shared } = transferFor(req); res.json(shared); });
+  app.get('/api/transfers/:id', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const pending = uploads.pendingShare(req.params.id);
+    if (pending) return res.json(pending);
+    const { ownerId, ...shared } = transferFor(req); res.json(shared);
+  });
   const previewFile = req => {
     const transfer = transferFor(req), file = transfer.files.find(f => f.id === req.params.fileId);
     if (!file) throw httpError(404, '文件不存在');

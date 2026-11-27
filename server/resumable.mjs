@@ -1,7 +1,7 @@
 import { mkdir, open, readdir, rm, lstat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { id, validId, atomicJson, readJson, safeName, datedFiles, MiB, httpError, secretEqual } from './util.mjs';
+import { id, validId, atomicJson, readJson, safeName, originalFiles, MiB, httpError, secretEqual } from './util.mjs';
 
 export const CHUNK_BYTES = 4 * MiB;
 export const UPLOAD_TTL = 24 * 3600000;
@@ -73,7 +73,7 @@ export class ResumableUploads {
     const files = input.files.map(file => {
       if (!file || typeof file.name !== 'string' || !file.name || file.name.length > 1024 || !Number.isSafeInteger(file.size) || file.size < 0) throw httpError(400, '文件信息无效');
       total += file.size; if (!Number.isSafeInteger(total)) throw httpError(400, '文件总大小无效');
-      return { id: id(), name: safeName(file.name), size: file.size, offset: 0 };
+      return { id: id(), name: safeName(file.name, false), size: file.size, offset: 0 };
     });
     const key = input.requestId || id(), token = input.token || id() + id();
     if (!validId(key) || !/^[A-Za-z0-9_-]{48}$/.test(token)) throw httpError(400, '上传任务标识无效');
@@ -103,7 +103,14 @@ export class ResumableUploads {
     const transfer = this.store.transfers.get(session.id);
     if (transfer) { const { ownerId, ...shared } = transfer; return { id: session.id, complete: true, transfer: { ...shared, sharePath: `/s/${session.id}` } }; }
     if (session.complete) throw httpError(410, '该次分享已被清理或删除');
-    return { id: session.id, complete: false, chunkBytes: CHUNK_BYTES, expiresAt: session.expiresAt, files: session.files.map(f => ({ id: f.id, name: f.name, size: f.size, offset: f.offset })) };
+    return { id: session.id, complete: false, sharePath: `/s/${session.id}`, transfer: this.pendingShare(session.id), chunkBytes: CHUNK_BYTES, expiresAt: session.expiresAt, files: session.files.map(f => ({ id: f.id, name: f.name, size: f.size, offset: f.offset })) };
+  }
+  pendingShare(key) {
+    const session = validId(key) && this.sessions.get(key);
+    if (!session || session.complete || session.expiresAt <= this.clock() || this.store.transfers.has(key)) return null;
+    return { id: key, uploading: true, sharePath: `/s/${key}`, createdAt: session.createdAt, permanent: session.hours === null,
+      expiresAt: session.expiresAt, totalSize: session.files.reduce((n, f) => n + f.size, 0), uploadedSize: session.files.reduce((n, f) => n + f.offset, 0),
+      files: session.files.map(({ id, name, size }) => ({ id, name, size })) };
   }
   async mutate(session, action) {
     if(this.sessions.get(session.id)!==session)throw httpError(410,'上传任务已取消或过期');
@@ -152,7 +159,7 @@ export class ResumableUploads {
       if (session.files.some(f => f.offset !== f.size)) throw httpError(409, '文件尚未上传完整');
       await this.store.disk.check();
       for (const file of session.files) if (!file.size) { const handle = await open(path.join(this.folder(session.id), file.id), 'a', 0o600); await handle.close(); }
-      const createdAt = this.clock(), files = datedFiles(session.files.map(({ offset, ...file }) => file), createdAt);
+      const createdAt = this.clock(), files = originalFiles(session.files.map(({ offset, ...file }) => file));
       const transfer = { id: session.id, ownerId: session.ownerId, files, totalSize: files.reduce((n, f) => n + f.size, 0), createdAt, permanent: session.hours === null, expiresAt: session.hours === null ? 8640000000000000 : createdAt + session.hours * 3600000 };
       const folder = this.folder(session.id);
       await this.store.commit(folder, transfer);

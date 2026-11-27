@@ -93,6 +93,7 @@
           this.record = { id: state.id, token: state.token, expiresAt: state.expiresAt, key, hours: this.hours, owner: this.owner }; save(this.record);
         }
         const headers = { Authorization: `Upload ${this.record.token}` }, total = this.files.reduce((n, f) => n + f.size, 0);
+        if (!state.complete) {this.hooks.ready?.(state.transfer);this.hooks.progress?.(state.files.reduce((n, f) => n + f.offset, 0), total);}
         for (let index = 0; !state.complete && index < this.files.length; index++) {
           let attempts = 0;
           while (state.files[index].offset < this.files[index].size) {
@@ -117,7 +118,7 @@
             }
           }
         }
-        if (!state.complete) { this.hooks.message?.('正在生成分享链接…'); state = await this.request(`/api/uploads/${this.record.id}/complete`, { method: 'POST', headers }); }
+        if (!state.complete) { this.hooks.message?.('正在确认文件完整性…'); state = await this.request(`/api/uploads/${this.record.id}/complete`, { method: 'POST', headers }); }
         forget(this.record.id); this.hooks.complete?.(state.transfer); this.record = null;
       } catch (error) { if(this.record && [404,410,507].includes(error.status))forget(this.record.id); if (error.name !== 'AbortError') this.hooks.error?.(error); else this.hooks.paused?.(); }
       finally { this.active = false; }
